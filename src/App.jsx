@@ -16,9 +16,9 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db  = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
 
-// ── Helpers de login (login → email interno) ─────────────────────────────
-// Formato de login: nome.sobrenome.123  →  nome.sobrenome.123@cotafrio.app
-const loginToEmail = login => `${login.trim().toLowerCase()}@cotafrio.app`;
+// ── Helpers de login ─────────────────────────────────────────────────────
+// O login é o próprio email cadastrado no Firebase Authentication
+const loginToEmail = login => login.trim().toLowerCase();
 
 // ── Constantes do app ────────────────────────────────────────────────────
 const CATEGORIAS = ["Fixação","Lubrificação","Tubulação","Elétrico","Refrigeração","Gás","Outro"];
@@ -205,10 +205,10 @@ function TelaLogin({onLogin}) {
           <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Sistema de Cotações</div>
         </div>
         <div style={{marginBottom:14}}>
-          <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>Login</label>
+          <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>E-mail</label>
           <input
             value={login} onChange={ev=>setLogin(ev.target.value)}
-            placeholder="nome.sobrenome.123"
+            placeholder="seu@email.com"
             onKeyDown={ev=>ev.key==="Enter"&&handleLogin()}
             style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:9,padding:"10px 14px",fontSize:14,outline:"none",boxSizing:"border-box"}}
           />
