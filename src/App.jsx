@@ -17,8 +17,19 @@ const db  = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
 
 // ── Helpers de login ─────────────────────────────────────────────────────
-// O login é o próprio email cadastrado no Firebase Authentication
 const loginToEmail = login => login.trim().toLowerCase();
+
+// ── API REST Firebase Auth (criar usuário sem SDK Admin) ─────────────────
+const FB_API_KEY = firebaseConfig.apiKey;
+async function criarUsuarioFirebase(email, senha) {
+  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FB_API_KEY}`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({email, password:senha, returnSecureToken:true})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || "Erro ao criar usuário");
+  return data.localId;
+}
 
 // ── Constantes do app ────────────────────────────────────────────────────
 const CATEGORIAS = ["Fixação","Lubrificação","Tubulação","Elétrico","Refrigeração","Gás","Outro"];
@@ -179,6 +190,140 @@ function FormModal({editId,initialForm,onSave,onClose}) {
   );
 }
 
+// ── Painel de Usuários (Admin) ───────────────────────────────────────────
+function PainelUsuarios({showToast}) {
+  const [usuarios, setUsuarios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+  const [editando, setEditando] = useState(null);
+  const [form, setForm] = useState({nome:"",email:"",senha:"",papel:"consultor"});
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => { carregarUsuarios(); }, []);
+
+  async function carregarUsuarios() {
+    setLoading(true);
+    try {
+      const snap = await getDocs(collection(db,"usuarios"));
+      setUsuarios(snap.docs.map(d=>d.data()));
+    } catch(e) { showToast("Erro ao carregar usuários.","erro"); }
+    finally { setLoading(false); }
+  }
+
+  function abrirNovo() { setForm({nome:"",email:"",senha:"",papel:"consultor"}); setEditando(null); setModal(true); }
+  function abrirEditar(u) { setForm({nome:u.nome||"",email:u.email||"",senha:"",papel:u.papel||"consultor"}); setEditando(u); setModal(true); }
+
+  async function salvarUsuario() {
+    if (!form.nome||!form.email) { showToast("Preencha nome e email.","erro"); return; }
+    if (!editando && !form.senha) { showToast("Defina uma senha para o novo usuário.","erro"); return; }
+    if (!editando && form.senha.length < 6) { showToast("A senha deve ter no mínimo 6 caracteres.","erro"); return; }
+    setSalvando(true);
+    try {
+      if (editando) {
+        // Atualiza apenas perfil no Firestore (email/senha pelo Firebase Console)
+        const atualizado = {...editando, nome:form.nome, papel:form.papel};
+        await setDoc(doc(db,"usuarios",editando.uid), atualizado);
+        setUsuarios(p=>p.map(u=>u.uid===editando.uid?atualizado:u));
+        showToast("Usuário atualizado.");
+      } else {
+        // Cria no Firebase Auth via API REST, depois salva perfil no Firestore
+        const uid = await criarUsuarioFirebase(form.email, form.senha);
+        const perfil = {uid, nome:form.nome, email:form.email, papel:form.papel, criadoEm:new Date().toISOString()};
+        await setDoc(doc(db,"usuarios",uid), perfil);
+        setUsuarios(p=>[...p, perfil]);
+        showToast("Usuário criado com sucesso.");
+      }
+      setModal(false);
+    } catch(e) {
+      const msg = e.message.includes("EMAIL_EXISTS") ? "Este email já está cadastrado." : e.message.includes("WEAK_PASSWORD") ? "Senha fraca. Use no mínimo 6 caracteres." : "Erro ao salvar usuário.";
+      showToast(msg,"erro");
+    } finally { setSalvando(false); }
+  }
+
+  const papelMap = {admin:{label:"Admin",bg:"#fef3c7",color:"#92400e"},gerente:{label:"Gerente",bg:"#dbeafe",color:"#1e40af"},consultor:{label:"Consultor",bg:"#f1f5f9",color:"#475569"}};
+
+  return (
+    <div style={{maxWidth:900,margin:"0 auto",padding:"28px 20px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,color:"#0f172a"}}>Usuários</div>
+          <div style={{fontSize:13,color:"#94a3b8",marginTop:2}}>{usuarios.length} {usuarios.length===1?"usuário cadastrado":"usuários cadastrados"}</div>
+        </div>
+        <button onClick={abrirNovo} style={{background:"#0f172a",color:"#fff",border:"none",borderRadius:8,padding:"9px 18px",fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:16}}>+</span> Novo usuário
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Carregando...</div>
+      ) : (
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,overflow:"hidden"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead><tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
+              {["Nome","E-mail","Perfil","Cadastrado em",""].map(h=><th key={h} style={{padding:"10px 16px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:.4}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {usuarios.map((u,i)=>{
+                const p=papelMap[u.papel]||papelMap.consultor;
+                return (
+                  <tr key={u.uid} style={{borderBottom:"1px solid #f1f5f9",background:i%2===0?"#fff":"#fafafa"}}>
+                    <td style={{padding:"12px 16px",fontWeight:600}}>{u.nome||"—"}</td>
+                    <td style={{padding:"12px 16px",color:"#475569"}}>{u.email||"—"}</td>
+                    <td style={{padding:"12px 16px"}}><span style={{background:p.bg,color:p.color,borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:600}}>{p.label}</span></td>
+                    <td style={{padding:"12px 16px",color:"#94a3b8",fontSize:12}}>{u.criadoEm?new Date(u.criadoEm).toLocaleDateString("pt-BR"):"—"}</td>
+                    <td style={{padding:"12px 16px"}}><button onClick={()=>abrirEditar(u)} style={{background:"none",border:"1px solid #e2e8f0",borderRadius:6,padding:"4px 12px",fontSize:11,color:"#475569",cursor:"pointer"}}>Editar</button></td>
+                  </tr>
+                );
+              })}
+              {usuarios.length===0&&<tr><td colSpan={5} style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhum usuário cadastrado.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Modal novo/editar usuário */}
+      {modal && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setModal(false)}>
+          <div onClick={ev=>ev.stopPropagation()} style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:440,padding:28}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:20}}>{editando?"Editar usuário":"Novo usuário"}</div>
+            <div style={{display:"grid",gap:14}}>
+              <div>
+                <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>Nome completo *</label>
+                <input value={form.nome} onChange={ev=>setForm(p=>({...p,nome:ev.target.value}))} placeholder="Ex: João Silva" style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"9px 12px",fontSize:13,boxSizing:"border-box"}}/>
+              </div>
+              {!editando && (
+                <div>
+                  <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>E-mail *</label>
+                  <input value={form.email} onChange={ev=>setForm(p=>({...p,email:ev.target.value}))} placeholder="usuario@email.com" style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"9px 12px",fontSize:13,boxSizing:"border-box"}}/>
+                </div>
+              )}
+              {!editando && (
+                <div>
+                  <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>Senha inicial *</label>
+                  <input type="password" value={form.senha} onChange={ev=>setForm(p=>({...p,senha:ev.target.value}))} placeholder="Mínimo 6 caracteres" style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"9px 12px",fontSize:13,boxSizing:"border-box"}}/>
+                </div>
+              )}
+              <div>
+                <label style={{fontSize:12,fontWeight:600,color:"#475569",display:"block",marginBottom:4}}>Perfil de acesso *</label>
+                <select value={form.papel} onChange={ev=>setForm(p=>({...p,papel:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"9px 12px",fontSize:13,background:"#fff"}}>
+                  <option value="admin">Admin — acesso total</option>
+                  <option value="gerente">Gerente — visualiza e edita</option>
+                  <option value="consultor">Consultor — somente visualiza</option>
+                </select>
+              </div>
+              {editando && <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#92400e"}}>Para alterar e-mail ou senha, acesse o Firebase Authentication no console do Firebase.</div>}
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:22}}>
+              <button onClick={()=>setModal(false)} style={{border:"1px solid #e2e8f0",background:"#fff",borderRadius:8,padding:"9px 18px",fontSize:13,cursor:"pointer"}}>Cancelar</button>
+              <button onClick={salvarUsuario} disabled={salvando} style={{background:"#0f172a",color:"#fff",border:"none",borderRadius:8,padding:"9px 22px",fontSize:13,fontWeight:600,cursor:salvando?"not-allowed":"pointer",opacity:salvando?.7:1}}>{salvando?"Salvando...":editando?"Salvar alterações":"Criar usuário"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Tela de Login ────────────────────────────────────────────────────────
 function TelaLogin({onLogin}) {
   const [login,setLogin]=useState("");
@@ -238,6 +383,7 @@ export default function App() {
   const [authLoading,setAuthLoading]=useState(true);
 
   const [cotacoes,setCotacoes]=useState([]);
+  const [aba,setAba]=useState("cotacoes");
   const [loading,setLoading]=useState(true);
   const [view,setView]=useState("lista");
   const [filtroStatus,setFiltroStatus]=useState("todos");
@@ -354,9 +500,17 @@ export default function App() {
             <div style={{fontSize:10,color:"#94a3b8",letterSpacing:.5}}>REFRIGERAÇÃO · CONTRATO 012/2022</div>
           </div>
         </div>
+        {/* Abas de navegação */}
+        <div style={{display:"flex",gap:2,marginLeft:16}}>
+          {[["cotacoes","Cotações"],...(usuario?.papel==="admin"?[["usuarios","Usuários"]]:[])] .map(([v,l])=>(
+            <button key={v} onClick={()=>setAba(v)} style={{background:aba===v?"#f1f5f9":"none",border:"none",borderRadius:8,padding:"6px 14px",fontSize:13,fontWeight:aba===v?600:400,color:aba===v?"#0f172a":"#64748b",cursor:"pointer"}}>
+              {l}
+            </button>
+          ))}
+        </div>
         <div style={{flex:1}}/>
-        <input placeholder="Buscar material, código..." value={busca} onChange={ev=>setBusca(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"7px 14px",fontSize:13,width:230,background:"#f8fafc",outline:"none"}}/>
-        {podeEditar && (
+        {aba==="cotacoes" && <input placeholder="Buscar material, código..." value={busca} onChange={ev=>setBusca(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"7px 14px",fontSize:13,width:230,background:"#f8fafc",outline:"none"}}/>}
+        {aba==="cotacoes" && podeEditar && (
           <button onClick={abrirNova} style={{background:"#0f172a",color:"#fff",border:"none",borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:600,display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
             <span style={{fontSize:16,lineHeight:1}}>+</span> Nova cotação
           </button>
@@ -371,7 +525,10 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{maxWidth:1200,margin:"0 auto",padding:"22px 20px"}}>
+      {/* Roteamento de abas */}
+      {aba==="usuarios" && usuario?.papel==="admin" && <PainelUsuarios showToast={showToast}/>}
+
+      {aba==="cotacoes" && <div style={{maxWidth:1200,margin:"0 auto",padding:"22px 20px"}}>
         {/* Stats */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
           {[{l:"Total",v:stats.total,c:"#0f172a",bg:"#f8fafc",br:"#e2e8f0",f:"todos"},{l:"Vigentes",v:stats.vigente,c:"#16a34a",bg:"#f0fdf4",br:"#86efac",f:"vigente"},{l:"A vencer",v:stats.avencer,c:"#b45309",bg:"#fffbeb",br:"#fcd34d",f:"avencer"},{l:"Vencidas",v:stats.vencida,c:"#dc2626",bg:"#fef2f2",br:"#fca5a5",f:"vencida"}].map(s=>
@@ -457,7 +614,7 @@ export default function App() {
             {filtradas.length===0&&<div style={{gridColumn:"1/-1",padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhuma cotação encontrada.</div>}
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Modal detalhe */}
       {detalhe&&(()=>{
