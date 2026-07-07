@@ -639,6 +639,7 @@ function TelaLogin() {
         </div>
         {erro&&<div style={{background:"#fef2f2",border:"1px solid #fca5a5",color:"#dc2626",borderRadius:8,padding:"9px 14px",fontSize:13,marginBottom:14}}>{erro}</div>}
         <button onClick={handleLogin} disabled={loading} style={{width:"100%",background:"#0f172a",color:"#fff",border:"none",borderRadius:9,padding:"11px",fontSize:14,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?.7:1}}>{loading?"Entrando...":"Entrar"}</button>
+        <div style={{marginTop:16,fontSize:11,color:"#94a3b8",textAlign:"center"}}>Use o e-mail e senha cadastrados no Firebase Authentication.</div>
       </div>
     </div>
   );
@@ -677,20 +678,40 @@ export default function App() {
   },[usuario,contratos]);
 
   useEffect(()=>{
+    // Timeout de segurança: se o Firebase não responder em 10s, libera a tela de login
+    const timer = setTimeout(()=>{ setAuthLoading(false); }, 10000);
+
     const unsub=onAuthStateChanged(auth,async(fireUser)=>{
-      if(fireUser){
-        setAuthUser(fireUser);
-        const snap=await getDoc(doc(db,"usuarios",fireUser.uid));
-        if(snap.exists()){ setUsuario(snap.data()); }
-        else{
-          const perfil={uid:fireUser.uid,email:fireUser.email,nome:fireUser.email,papel:"admin",contratosAcesso:[],criadoEm:new Date().toISOString()};
-          await setDoc(doc(db,"usuarios",fireUser.uid),perfil);
-          setUsuario(perfil);
+      clearTimeout(timer);
+      try {
+        if(fireUser){
+          setAuthUser(fireUser);
+          try {
+            const snap=await getDoc(doc(db,"usuarios",fireUser.uid));
+            if(snap.exists()){
+              setUsuario(snap.data());
+            } else {
+              // Perfil não encontrado — recria como Admin automaticamente
+              const perfil={uid:fireUser.uid,email:fireUser.email,nome:fireUser.email,papel:"admin",contratosAcesso:[],criadoEm:new Date().toISOString()};
+              await setDoc(doc(db,"usuarios",fireUser.uid),perfil);
+              setUsuario(perfil);
+            }
+          } catch(e) {
+            // Erro ao buscar perfil no Firestore — cria perfil local temporário
+            console.error("Erro ao buscar perfil:", e);
+            setUsuario({uid:fireUser.uid,email:fireUser.email,nome:fireUser.email,papel:"admin",contratosAcesso:[]});
+          }
+        } else {
+          setAuthUser(null);
+          setUsuario(null);
         }
-      } else { setAuthUser(null);setUsuario(null); }
-      setAuthLoading(false);
+      } catch(e) {
+        console.error("Erro no onAuthStateChanged:", e);
+      } finally {
+        setAuthLoading(false);
+      }
     });
-    return unsub;
+    return ()=>{ clearTimeout(timer); unsub(); };
   },[]);
 
   useEffect(()=>{
@@ -754,7 +775,13 @@ export default function App() {
   }
   async function fazerLogout(){await signOut(auth);}
 
-  if(authLoading) return <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#64748b"}}><div style={{width:38,height:38,background:"#0f172a",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#38bdf8"}}>❄</div><div style={{fontSize:14,fontWeight:500}}>Verificando sessão...</div></div>;
+  if(authLoading) return (
+    <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#64748b"}}>
+      <div style={{width:48,height:48,background:"#0f172a",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#38bdf8"}}>❄</div>
+      <div style={{fontSize:14,fontWeight:500}}>Verificando sessão...</div>
+      <div style={{fontSize:12,color:"#94a3b8"}}>Se esta tela não avançar, <button onClick={()=>window.location.reload()} style={{background:"none",border:"none",color:"#0369a1",cursor:"pointer",fontSize:12,textDecoration:"underline",padding:0}}>clique aqui para recarregar</button>.</div>
+    </div>
+  );
   if(!authUser) return <TelaLogin/>;
   if(loading) return <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#64748b"}}><div style={{width:38,height:38,background:"#0f172a",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#38bdf8"}}>❄</div><div style={{fontSize:14,fontWeight:500}}>Carregando...</div></div>;
 
