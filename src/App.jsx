@@ -44,6 +44,8 @@ const PAPEIS = {
   consultor: { label:"Consultor", bg:"#f1f5f9", color:"#475569", border:"#cbd5e1" },
 };
 
+const OPCOES_UNIDADE = ["unid", "Kg", "Metro", "Litro"];
+
 // ── Cálculos ──────────────────────────────────────────────────────────────
 function arredCima(n, dec = 2) { return Math.ceil(n * 10 ** dec) / 10 ** dec; }
 function sanear(fornecedores) {
@@ -458,8 +460,13 @@ function PainelContratos({showToast}) {
 // ── Painel Itens Previstos ────────────────────────────────────────────────
 function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, usuario }) {
   const [filtroContrato, setFiltroContrato] = useState("");
-  const [novoMaterial, setNovoMaterial] = useState({nome:"", unidade:"", valor:""});
+  const [buscaItem, setBuscaItem] = useState(""); 
+  const [novoMaterial, setNovoMaterial] = useState({item:"", nome:"", unidade:"unid", valor:""});
   const [reajustePct, setReajustePct] = useState("");
+
+  // Estados de edição inline
+  const [editandoItem, setEditandoItem] = useState(null); // id do material em edicao
+  const [formEdicao, setFormEdicao] = useState({item:"", nome:"", unidade:"unid", valor:""});
 
   useEffect(() => {
     if (!filtroContrato && contratosAcessiveis.length > 0) {
@@ -470,6 +477,12 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
   const contratoSelecionado = contratosAcessiveis.find(c => c.id === filtroContrato);
   const podeEditar = usuario?.papel === "admin" || usuario?.papel === "fiscal";
 
+  // Lógica de filtro da busca
+  const materiaisFiltrados = (contratoSelecionado?.materiais || []).filter(m =>
+    m.nome.toLowerCase().includes(buscaItem.toLowerCase()) || 
+    (m.item && String(m.item).toLowerCase().includes(buscaItem.toLowerCase()))
+  );
+
   async function addMaterial() {
       if(!novoMaterial.nome || !novoMaterial.valor || !contratoSelecionado) return;
       const matAdd = {...novoMaterial, id: Date.now().toString(), valor: parseFloat(novoMaterial.valor)};
@@ -478,7 +491,7 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
       try {
           await setDoc(doc(db,"contratos",contratoSelecionado.id), {materiais: novosMateriais}, {merge:true});
           setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
-          setNovoMaterial({nome:"", unidade:"", valor:""});
+          setNovoMaterial({item:"", nome:"", unidade:"unid", valor:""});
           showToast("Item adicionado.");
       } catch(e) { showToast("Erro ao adicionar item.", "erro"); }
   }
@@ -491,6 +504,31 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
           setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
           showToast("Item removido.");
       } catch(e) { showToast("Erro ao remover item.", "erro"); }
+  }
+
+  function iniciarEdicao(m) {
+      setEditandoItem(m.id);
+      setFormEdicao({item: m.item || "", nome: m.nome, unidade: m.unidade || "unid", valor: m.valor});
+  }
+
+  function cancelarEdicao() {
+      setEditandoItem(null);
+  }
+
+  async function salvarEdicao() {
+      if (!contratoSelecionado || !formEdicao.nome || !formEdicao.valor) return;
+      const novosMateriais = contratoSelecionado.materiais.map(m => 
+          m.id === editandoItem 
+            ? { ...m, item: formEdicao.item, nome: formEdicao.nome, unidade: formEdicao.unidade, valor: parseFloat(formEdicao.valor) }
+            : m
+      );
+
+      try {
+          await setDoc(doc(db,"contratos",contratoSelecionado.id), {materiais: novosMateriais}, {merge:true});
+          setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
+          setEditandoItem(null);
+          showToast("Item atualizado com sucesso.");
+      } catch(e) { showToast("Erro ao atualizar item.", "erro"); }
   }
 
   async function aplicarReajuste() {
@@ -520,12 +558,21 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
         </div>
       </div>
 
-      <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"20px",marginBottom:20}}>
-        <label style={{fontSize:12,fontWeight:600,color:"#64748b",display:"block",marginBottom:8}}>Selecione o Contrato</label>
-        <select value={filtroContrato} onChange={ev=>setFiltroContrato(ev.target.value)} style={{width:"100%",maxWidth:400,border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>
-            <option value="">— Selecione —</option>
-            {contratosAcessiveis.map(c=><option key={c.id} value={c.id}>{c.numero} — {c.contratadaRazaoSocial}</option>)}
-        </select>
+      <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"20px",marginBottom:20, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end"}}>
+        <div style={{flex: 1, minWidth: 250, maxWidth: 400}}>
+          <label style={{fontSize:12,fontWeight:600,color:"#64748b",display:"block",marginBottom:8}}>Selecione o Contrato</label>
+          <select value={filtroContrato} onChange={ev=>{setFiltroContrato(ev.target.value); setBuscaItem("");}} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>
+              <option value="">— Selecione —</option>
+              {contratosAcessiveis.map(c=><option key={c.id} value={c.id}>{c.numero} — {c.contratadaRazaoSocial}</option>)}
+          </select>
+        </div>
+        
+        {contratoSelecionado && (
+          <div style={{flex: 1, minWidth: 250, maxWidth: 400}}>
+            <label style={{fontSize:12,fontWeight:600,color:"#64748b",display:"block",marginBottom:8}}>Pesquisar Item</label>
+            <input placeholder="Buscar por nº ou descrição..." value={buscaItem} onChange={ev=>setBuscaItem(ev.target.value)} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13,outline:"none"}}/>
+          </div>
+        )}
       </div>
 
       {contratoSelecionado && (
@@ -544,10 +591,13 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
               {podeEditar && (
                 <div style={{background:"#f8fafc",borderRadius:8,padding:"12px", marginBottom: 16, border: "1px solid #e2e8f0"}}>
                     <div style={{fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8}}>ADICIONAR NOVO ITEM</div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 100px 140px 40px",gap:8,alignItems:"center"}}>
-                        <input placeholder="Nome ou descrição do material" value={novoMaterial.nome} onChange={e=>setNovoMaterial({...novoMaterial,nome:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
-                        <input placeholder="Unid." value={novoMaterial.unidade} onChange={e=>setNovoMaterial({...novoMaterial,unidade:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
-                        <input type="number" step="0.01" placeholder="Valor ref. (R$)" value={novoMaterial.valor} onChange={e=>setNovoMaterial({...novoMaterial,valor:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                    <div style={{display:"grid",gridTemplateColumns:"70px 1fr 100px 140px 40px",gap:8,alignItems:"center"}}>
+                        <input placeholder="Item (Nº)" value={novoMaterial.item} onChange={e=>setNovoMaterial({...novoMaterial,item:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                        <input placeholder="Descrição do material..." value={novoMaterial.nome} onChange={e=>setNovoMaterial({...novoMaterial,nome:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                        <select value={novoMaterial.unidade} onChange={e=>setNovoMaterial({...novoMaterial,unidade:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13, background:"#fff"}}>
+                            {OPCOES_UNIDADE.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                        <input type="number" step="0.01" placeholder="Valor Unit. (R$)" value={novoMaterial.valor} onChange={e=>setNovoMaterial({...novoMaterial,valor:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
                         <button onClick={addMaterial} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:6,padding:"8px",fontSize:16,cursor:"pointer",display:"flex",justifyContent:"center", fontWeight: "bold"}}>+</button>
                     </div>
                 </div>
@@ -556,23 +606,59 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead>
                       <tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
+                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:60}}>Item</th>
                           <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b"}}>Descrição</th>
                           <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:100}}>Unidade</th>
-                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:140}}>Valor Base (R$)</th>
-                          {podeEditar && <th style={{padding:"10px 14px",width:40}}></th>}
+                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:140}}>Valor Unitário (R$)</th>
+                          {podeEditar && <th style={{padding:"10px 14px",width:80,textAlign:"center"}}>Ações</th>}
                       </tr>
                   </thead>
                   <tbody>
-                      {(contratoSelecionado.materiais || []).map((m, i) => (
-                          <tr key={m.id} style={{borderBottom:"1px solid #f1f5f9"}}>
-                              <td style={{padding:"11px 14px",fontWeight:500}}>{m.nome}</td>
-                              <td style={{padding:"11px 14px",color:"#64748b"}}>{m.unidade}</td>
-                              <td style={{padding:"11px 14px",fontWeight:600,color:"#0f172a"}}>R$ {brl(m.valor)}</td>
-                              {podeEditar && <td style={{padding:"11px 14px"}}><button onClick={()=>delMaterial(m.id)} style={{background:"none",border:"none",color:"#dc2626",fontSize:18,cursor:"pointer"}}>×</button></td>}
-                          </tr>
-                      ))}
-                      {(!contratoSelecionado.materiais || contratoSelecionado.materiais.length === 0) && (
-                          <tr><td colSpan={podeEditar ? 4 : 3} style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhum item cadastrado neste contrato.</td></tr>
+                      {materiaisFiltrados.map((m) => {
+                          if (editandoItem === m.id) {
+                              return (
+                                <tr key={m.id} style={{borderBottom:"1px solid #f1f5f9", background: "#eff6ff"}}>
+                                    <td style={{padding:"8px 14px"}}>
+                                        <input value={formEdicao.item} onChange={e=>setFormEdicao({...formEdicao,item:e.target.value})} style={{width:"100%", border:"1px solid #93c5fd", borderRadius:4, padding:"6px", fontSize:12}} placeholder="Nº"/>
+                                    </td>
+                                    <td style={{padding:"8px 14px"}}>
+                                        <input value={formEdicao.nome} onChange={e=>setFormEdicao({...formEdicao,nome:e.target.value})} style={{width:"100%", border:"1px solid #93c5fd", borderRadius:4, padding:"6px", fontSize:12}} placeholder="Descrição"/>
+                                    </td>
+                                    <td style={{padding:"8px 14px"}}>
+                                        <select value={formEdicao.unidade} onChange={e=>setFormEdicao({...formEdicao,unidade:e.target.value})} style={{width:"100%", border:"1px solid #93c5fd", borderRadius:4, padding:"6px", fontSize:12, background:"#fff"}}>
+                                            {OPCOES_UNIDADE.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                        </select>
+                                    </td>
+                                    <td style={{padding:"8px 14px"}}>
+                                        <input type="number" step="0.01" value={formEdicao.valor} onChange={e=>setFormEdicao({...formEdicao,valor:e.target.value})} style={{width:"100%", border:"1px solid #93c5fd", borderRadius:4, padding:"6px", fontSize:12}} placeholder="0.00"/>
+                                    </td>
+                                    <td style={{padding:"8px 14px", whiteSpace:"nowrap", textAlign:"center"}}>
+                                        <button onClick={salvarEdicao} style={{background:"#16a34a", color:"#fff", border:"none", borderRadius:4, padding:"5px 10px", fontSize:11, cursor:"pointer", marginRight:4, fontWeight:600}}>Salvar</button>
+                                        <button onClick={cancelarEdicao} style={{background:"#94a3b8", color:"#fff", border:"none", borderRadius:4, padding:"5px 10px", fontSize:11, cursor:"pointer", fontWeight:600}}>Cancelar</button>
+                                    </td>
+                                </tr>
+                              );
+                          }
+
+                          return (
+                              <tr key={m.id} style={{borderBottom:"1px solid #f1f5f9"}}>
+                                  <td style={{padding:"11px 14px",fontWeight:600, color:"#64748b"}}>{m.item || "—"}</td>
+                                  <td style={{padding:"11px 14px",fontWeight:500}}>{m.nome}</td>
+                                  <td style={{padding:"11px 14px",color:"#64748b"}}>{m.unidade}</td>
+                                  <td style={{padding:"11px 14px",fontWeight:600,color:"#0f172a"}}>R$ {brl(m.valor)}</td>
+                                  {podeEditar && (
+                                    <td style={{padding:"11px 14px", textAlign:"center", whiteSpace: "nowrap"}}>
+                                        <button onClick={()=>iniciarEdicao(m)} style={{background:"none",border:"none",color:"#0369a1",fontSize:16,cursor:"pointer", marginRight: 10}} title="Editar">✎</button>
+                                        <button onClick={()=>delMaterial(m.id)} style={{background:"none",border:"none",color:"#dc2626",fontSize:18,cursor:"pointer", fontWeight:"bold"}} title="Excluir">×</button>
+                                    </td>
+                                  )}
+                              </tr>
+                          );
+                      })}
+                      {materiaisFiltrados.length === 0 && (
+                          <tr><td colSpan={podeEditar ? 5 : 4} style={{padding:40,textAlign:"center",color:"#94a3b8"}}>
+                              {buscaItem ? "Nenhum item encontrado para esta busca." : "Nenhum item cadastrado neste contrato."}
+                          </td></tr>
                       )}
                   </tbody>
               </table>
@@ -768,7 +854,7 @@ function TelaLogin() {
       <div style={{background:"#fff",borderRadius:18,border:"1px solid #e2e8f0",padding:"36px 40px",width:"100%",maxWidth:380,boxShadow:"0 8px 32px rgba(0,0,0,.07)"}}>
         <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:28}}>
           <div style={{width:48,height:48,background:"#0f172a",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#38bdf8",marginBottom:12}}>❄</div>
-          <div style={{fontSize:20,fontWeight:800,color:"#0f172a",letterSpacing:-.4}}>CotaFacil</div>
+          <div style={{fontSize:20,fontWeight:800,color:"#0f172a",letterSpacing:-.4}}>CotaFacil SMP</div>
           <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Sistema de Cotações</div>
         </div>
         <div style={{marginBottom:14}}>
