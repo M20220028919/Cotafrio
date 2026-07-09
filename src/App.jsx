@@ -27,7 +27,6 @@ async function criarUsuarioFirebase(email, senha) {
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────
-const CATEGORIAS = ["Tubulação", "Elétrico", "Refrigeração", "Gás", "Outro"];
 const STATUS_CONTRATO = {
   ativo:     { label:"Ativo",     color:"#16a34a", bg:"#dcfce7", border:"#86efac" },
   encerrado: { label:"Encerrado", color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
@@ -86,7 +85,7 @@ const brl = n => Number(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2});
 const pct = n => (n>=0?"+":"") + ((n||0)*100).toFixed(2)+"%";
 const fmtData = dt => dt ? new Date(dt+"T12:00:00").toLocaleDateString("pt-BR") : "—";
 
-const emptyFormCotacao = {material:"",codigo:"",categoria:"Refrigeração",unidade:"UNID.",contratoId:"",dataBase:"",dataElaboracao:"",quantidade:1,observacoes:"",imagem:null, precoDireto: false, valorFinalDireto: "", fornecedores:[{nome:"",url:"",valor:""}]};
+const emptyFormCotacao = {material:"",codigo:"",unidade:"UNID.",contratoId:"",dataBase:"",dataElaboracao:"",quantidade:1,observacoes:"",imagem:null, precoDireto: false, valorFinalDireto: "", fornecedores:[{nome:"",url:"",valor:""}]};
 
 const emptyFormContrato = {
   numero:"",processoSEI:"",objeto:"",statusContrato:"ativo",
@@ -102,9 +101,6 @@ const emptyFormContrato = {
 function StatusBadge({status,size}) {
   const s=SV[status]||SV.vencida;
   return <span style={{background:s.bg,color:s.color,border:`1px solid ${s.border}`,borderRadius:20,padding:size==="lg"?"4px 14px":"2px 10px",fontSize:size==="lg"?13:11,fontWeight:600,display:"inline-block",whiteSpace:"nowrap"}}>{s.label}</span>;
-}
-function CatBadge({cat}) {
-  return <span style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:500}}>{cat}</span>;
 }
 function RoleBadge({papel}) {
   const s=PAPEIS[papel]||PAPEIS.consultor;
@@ -202,7 +198,6 @@ function FormModalCotacao({editId,initialForm,contratos,onSave,onClose}) {
 
           <div style={{gridColumn:"1/-1"}}>{lbl("Material / Descrição","",true)}<input value={form.material} onChange={ev=>setForm(p=>({...p,material:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
           <div>{lbl("Código")}<input value={form.codigo||""} onChange={ev=>setForm(p=>({...p,codigo:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
-          <div>{lbl("Categoria")}<select value={form.categoria} onChange={ev=>setForm(p=>({...p,categoria:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}</select></div>
           <div>{lbl("Unidade")}<input value={form.unidade||""} onChange={ev=>setForm(p=>({...p,unidade:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
 
           <div>{lbl("Data base")}<input value={form.dataBase||""} onChange={ev=>setForm(p=>({...p,dataBase:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
@@ -344,10 +339,6 @@ function PainelContratos({showToast}) {
   const [modal,setModal]=useState(false);
   const [editando,setEditando]=useState(null);
   const [detalhe,setDetalhe]=useState(null);
-  
-  // Estado para materiais do contrato selecionado
-  const [novoMaterial, setNovoMaterial] = useState({nome:"", unidade:"", valor:""});
-  const [reajustePct, setReajustePct] = useState("");
 
   useEffect(()=>{carregar();},[]);
   async function carregar(){
@@ -382,47 +373,6 @@ function PainelContratos({showToast}) {
     if(!window.confirm("Excluir este contrato? As cotações vinculadas não serão excluídas.")) return;
     try{ await deleteDoc(doc(db,"contratos",id)); setContratos(p=>p.filter(c=>c.id!==id)); setDetalhe(null); showToast("Contrato removido."); }
     catch(e){ showToast("Erro ao excluir.","erro"); }
-  }
-
-  async function addMaterial() {
-      if(!novoMaterial.nome || !novoMaterial.valor) return;
-      const matAdd = {...novoMaterial, id: Date.now().toString(), valor: parseFloat(novoMaterial.valor)};
-      const novosMateriais = [...(detalhe.materiais || []), matAdd];
-      
-      try {
-          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
-          setDetalhe({...detalhe, materiais: novosMateriais});
-          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
-          setNovoMaterial({nome:"", unidade:"", valor:""});
-          showToast("Material adicionado.");
-      } catch(e) { showToast("Erro ao adicionar material.", "erro"); }
-  }
-
-  async function delMaterial(idMat) {
-      const novosMateriais = detalhe.materiais.filter(m => m.id !== idMat);
-      try {
-          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
-          setDetalhe({...detalhe, materiais: novosMateriais});
-          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
-      } catch(e) { showToast("Erro ao remover material.", "erro"); }
-  }
-
-  async function aplicarReajuste() {
-      const pct = parseFloat(reajustePct);
-      if(isNaN(pct) || !detalhe.materiais?.length) return;
-      
-      const novosMateriais = detalhe.materiais.map(m => ({
-          ...m, 
-          valor: m.valor * (1 + (pct/100))
-      }));
-
-      try {
-          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
-          setDetalhe({...detalhe, materiais: novosMateriais});
-          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
-          setReajustePct("");
-          showToast("Reajuste aplicado com sucesso.");
-      } catch(e) { showToast("Erro ao reajustar materiais.", "erro"); }
   }
 
   return (
@@ -492,38 +442,6 @@ function PainelContratos({showToast}) {
               </div>
             ))}
             
-            {/* Seção de Materiais do Contrato */}
-            <div style={{marginBottom: 16, borderTop: "1px solid #e2e8f0", paddingTop: 16}}>
-                <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8}}>
-                    <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.5}}>MATERIAIS PREVISTOS (Sem cotação)</div>
-                    <div style={{display: "flex", gap: 6}}>
-                        <input type="number" placeholder="Reajuste (%)" value={reajustePct} onChange={e=>setReajustePct(e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"4px 8px",fontSize:11, width: 90}}/>
-                        <button onClick={aplicarReajuste} style={{background:"#0369a1",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Aplicar</button>
-                    </div>
-                </div>
-                
-                <div style={{background:"#f8fafc",borderRadius:8,padding:8, marginBottom: 8}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 70px 100px 30px",gap:6,alignItems:"center"}}>
-                        <input placeholder="Nome do material" value={novoMaterial.nome} onChange={e=>setNovoMaterial({...novoMaterial,nome:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
-                        <input placeholder="Unid." value={novoMaterial.unidade} onChange={e=>setNovoMaterial({...novoMaterial,unidade:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
-                        <input type="number" step="0.01" placeholder="Valor (R$)" value={novoMaterial.valor} onChange={e=>setNovoMaterial({...novoMaterial,valor:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
-                        <button onClick={addMaterial} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:6,padding:"6px",fontSize:14,cursor:"pointer",display:"flex",justifyContent:"center"}}>+</button>
-                    </div>
-                </div>
-
-                <div style={{maxHeight: 150, overflowY:"auto"}}>
-                    {(detalhe.materiais || []).map((m, i) => (
-                        <div key={m.id} style={{display:"grid",gridTemplateColumns:"1fr 70px 100px 30px",gap:6,alignItems:"center", padding: "6px 8px", borderBottom: "1px solid #f1f5f9", fontSize: 12}}>
-                            <div style={{fontWeight: 500}}>{m.nome}</div>
-                            <div style={{color: "#64748b"}}>{m.unidade}</div>
-                            <div style={{fontWeight: 600}}>R$ {brl(m.valor)}</div>
-                            <button onClick={()=>delMaterial(m.id)} style={{background:"none",border:"none",color:"#dc2626",fontSize:16,cursor:"pointer"}}>×</button>
-                        </div>
-                    ))}
-                    {(!detalhe.materiais || detalhe.materiais.length === 0) && <div style={{padding: 10, textAlign: "center", color: "#94a3b8", fontSize: 12}}>Nenhum material cadastrado neste contrato.</div>}
-                </div>
-            </div>
-
             <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
               <button onClick={()=>excluir(detalhe.id)} style={{border:"1px solid #fca5a5",background:"#fff",color:"#dc2626",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Excluir</button>
               <button onClick={()=>abrirEditar(detalhe)} style={{border:"1px solid #e2e8f0",background:"#fff",color:"#0f172a",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Editar</button>
@@ -533,6 +451,133 @@ function PainelContratos({showToast}) {
         </div>
       )}
       {modal&&<FormModalContrato editId={editando?.id} initialForm={editando||emptyFormContrato} onSave={salvar} onClose={()=>setModal(false)}/>}
+    </div>
+  );
+}
+
+// ── Painel Itens Previstos ────────────────────────────────────────────────
+function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, usuario }) {
+  const [filtroContrato, setFiltroContrato] = useState("");
+  const [novoMaterial, setNovoMaterial] = useState({nome:"", unidade:"", valor:""});
+  const [reajustePct, setReajustePct] = useState("");
+
+  useEffect(() => {
+    if (!filtroContrato && contratosAcessiveis.length > 0) {
+      setFiltroContrato(contratosAcessiveis[0].id);
+    }
+  }, [contratosAcessiveis, filtroContrato]);
+
+  const contratoSelecionado = contratosAcessiveis.find(c => c.id === filtroContrato);
+  const podeEditar = usuario?.papel === "admin" || usuario?.papel === "fiscal";
+
+  async function addMaterial() {
+      if(!novoMaterial.nome || !novoMaterial.valor || !contratoSelecionado) return;
+      const matAdd = {...novoMaterial, id: Date.now().toString(), valor: parseFloat(novoMaterial.valor)};
+      const novosMateriais = [...(contratoSelecionado.materiais || []), matAdd];
+
+      try {
+          await setDoc(doc(db,"contratos",contratoSelecionado.id), {materiais: novosMateriais}, {merge:true});
+          setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
+          setNovoMaterial({nome:"", unidade:"", valor:""});
+          showToast("Item adicionado.");
+      } catch(e) { showToast("Erro ao adicionar item.", "erro"); }
+  }
+
+  async function delMaterial(idMat) {
+      if (!contratoSelecionado) return;
+      const novosMateriais = contratoSelecionado.materiais.filter(m => m.id !== idMat);
+      try {
+          await setDoc(doc(db,"contratos",contratoSelecionado.id), {materiais: novosMateriais}, {merge:true});
+          setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
+          showToast("Item removido.");
+      } catch(e) { showToast("Erro ao remover item.", "erro"); }
+  }
+
+  async function aplicarReajuste() {
+      if (!contratoSelecionado) return;
+      const pct = parseFloat(reajustePct);
+      if(isNaN(pct) || !contratoSelecionado.materiais?.length) return;
+
+      const novosMateriais = contratoSelecionado.materiais.map(m => ({
+          ...m, 
+          valor: m.valor * (1 + (pct/100))
+      }));
+
+      try {
+          await setDoc(doc(db,"contratos",contratoSelecionado.id), {materiais: novosMateriais}, {merge:true});
+          setContratos(p=>p.map(c=>c.id===contratoSelecionado.id?{...c, materiais: novosMateriais}:c));
+          setReajustePct("");
+          showToast("Reajuste aplicado com sucesso.");
+      } catch(e) { showToast("Erro ao reajustar itens.", "erro"); }
+  }
+
+  return (
+    <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 20px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700}}>Itens Previstos</div>
+          <div style={{fontSize:13,color:"#94a3b8",marginTop:2}}>Gerencie os materiais fixos do contrato</div>
+        </div>
+      </div>
+
+      <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"20px",marginBottom:20}}>
+        <label style={{fontSize:12,fontWeight:600,color:"#64748b",display:"block",marginBottom:8}}>Selecione o Contrato</label>
+        <select value={filtroContrato} onChange={ev=>setFiltroContrato(ev.target.value)} style={{width:"100%",maxWidth:400,border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>
+            <option value="">— Selecione —</option>
+            {contratosAcessiveis.map(c=><option key={c.id} value={c.id}>{c.numero} — {c.contratadaRazaoSocial}</option>)}
+        </select>
+      </div>
+
+      {contratoSelecionado && (
+          <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"20px"}}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16}}>
+                  <div style={{fontSize:14,fontWeight:700,color:"#0f172a"}}>Itens de {contratoSelecionado.numero}</div>
+                  {podeEditar && (
+                    <div style={{display: "flex", gap: 6, alignItems: "center"}}>
+                        <span style={{fontSize: 12, color: "#64748b", fontWeight: 600}}>Reajuste em lote:</span>
+                        <input type="number" placeholder="Ex: 5.5 (%)" value={reajustePct} onChange={e=>setReajustePct(e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 10px",fontSize:12, width: 100}}/>
+                        <button onClick={aplicarReajuste} style={{background:"#0369a1",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",fontSize:12,fontWeight: 600,cursor:"pointer"}}>Aplicar</button>
+                    </div>
+                  )}
+              </div>
+
+              {podeEditar && (
+                <div style={{background:"#f8fafc",borderRadius:8,padding:"12px", marginBottom: 16, border: "1px solid #e2e8f0"}}>
+                    <div style={{fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8}}>ADICIONAR NOVO ITEM</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 100px 140px 40px",gap:8,alignItems:"center"}}>
+                        <input placeholder="Nome ou descrição do material" value={novoMaterial.nome} onChange={e=>setNovoMaterial({...novoMaterial,nome:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                        <input placeholder="Unid." value={novoMaterial.unidade} onChange={e=>setNovoMaterial({...novoMaterial,unidade:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                        <input type="number" step="0.01" placeholder="Valor ref. (R$)" value={novoMaterial.valor} onChange={e=>setNovoMaterial({...novoMaterial,valor:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"8px 10px",fontSize:13}}/>
+                        <button onClick={addMaterial} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:6,padding:"8px",fontSize:16,cursor:"pointer",display:"flex",justifyContent:"center", fontWeight: "bold"}}>+</button>
+                    </div>
+                </div>
+              )}
+
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                      <tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
+                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b"}}>Descrição</th>
+                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:100}}>Unidade</th>
+                          <th style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",width:140}}>Valor Base (R$)</th>
+                          {podeEditar && <th style={{padding:"10px 14px",width:40}}></th>}
+                      </tr>
+                  </thead>
+                  <tbody>
+                      {(contratoSelecionado.materiais || []).map((m, i) => (
+                          <tr key={m.id} style={{borderBottom:"1px solid #f1f5f9"}}>
+                              <td style={{padding:"11px 14px",fontWeight:500}}>{m.nome}</td>
+                              <td style={{padding:"11px 14px",color:"#64748b"}}>{m.unidade}</td>
+                              <td style={{padding:"11px 14px",fontWeight:600,color:"#0f172a"}}>R$ {brl(m.valor)}</td>
+                              {podeEditar && <td style={{padding:"11px 14px"}}><button onClick={()=>delMaterial(m.id)} style={{background:"none",border:"none",color:"#dc2626",fontSize:18,cursor:"pointer"}}>×</button></td>}
+                          </tr>
+                      ))}
+                      {(!contratoSelecionado.materiais || contratoSelecionado.materiais.length === 0) && (
+                          <tr><td colSpan={podeEditar ? 4 : 3} style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhum item cadastrado neste contrato.</td></tr>
+                      )}
+                  </tbody>
+              </table>
+          </div>
+      )}
     </div>
   );
 }
@@ -723,7 +768,7 @@ function TelaLogin() {
       <div style={{background:"#fff",borderRadius:18,border:"1px solid #e2e8f0",padding:"36px 40px",width:"100%",maxWidth:380,boxShadow:"0 8px 32px rgba(0,0,0,.07)"}}>
         <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:28}}>
           <div style={{width:48,height:48,background:"#0f172a",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#38bdf8",marginBottom:12}}>❄</div>
-          <div style={{fontSize:20,fontWeight:800,color:"#0f172a",letterSpacing:-.4}}>CotaFrio</div>
+          <div style={{fontSize:20,fontWeight:800,color:"#0f172a",letterSpacing:-.4}}>CotaFacil</div>
           <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>Sistema de Cotações</div>
         </div>
         <div style={{marginBottom:14}}>
@@ -753,7 +798,6 @@ export default function App() {
   const [loading,setLoading]=useState(true);
   const [view,setView]=useState("lista");
   const [filtroStatus,setFiltroStatus]=useState("todos");
-  const [filtroCategoria,setFiltroCategoria]=useState("todas");
   const [filtroContrato,setFiltroContrato]=useState("todos");
   const [busca,setBusca]=useState("");
   const [modalForm,setModalForm]=useState(false);
@@ -812,7 +856,7 @@ export default function App() {
     async function carregar(){
       try{
         const [snapC,snapCot]=await Promise.all([getDocs(collection(db,"contratos")),getDocs(collection(db,"cotacoes"))]);
-        setContratos(snapC.docs.map(d=>({id:d.id,...d.data()})));
+        setContratos(snapC.docs.map(d=>({id:d.id, materiais: [], ...d.data()})));
         if(!snapCot.empty){
           const dados=snapCot.docs.map(d=>enriquecer(d.data()));
           dados.sort((a,b)=>a.id-b.id);
@@ -830,11 +874,10 @@ export default function App() {
       if(c.contratoId&&!ids.includes(c.contratoId)) return false;
     }
     if(filtroStatus!=="todos"&&c.status!==filtroStatus) return false;
-    if(filtroCategoria!=="todas"&&c.categoria!==filtroCategoria) return false;
     if(filtroContrato!=="todos"&&c.contratoId!==filtroContrato) return false;
     if(busca&&!c.material.toLowerCase().includes(busca.toLowerCase())&&!c.codigo?.toLowerCase().includes(busca.toLowerCase())) return false;
     return true;
-  }),[cotacoes,filtroStatus,filtroCategoria,filtroContrato,busca,usuario]);
+  }),[cotacoes,filtroStatus,filtroContrato,busca,usuario]);
 
   // Agrupando cotações por contrato
   const cotacoesAgrupadas = useMemo(() => {
@@ -884,14 +927,18 @@ export default function App() {
   if(!authUser) return <TelaLogin/>;
   if(loading) return <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#64748b"}}><div style={{width:38,height:38,background:"#0f172a",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#38bdf8"}}>❄</div><div style={{fontSize:14,fontWeight:500}}>Carregando...</div></div>;
 
-  const abas=[["cotacoes","Cotações"],...(usuario?.papel==="admin"?[["contratos","Contratos"],["usuarios","Usuários"]]:usuario?.papel==="fiscal"?[["contratos","Contratos"]]:[] )];
+  const abas = [
+      ["cotacoes","Cotações"], 
+      ["itens","Itens Previstos"],
+      ...(usuario?.papel==="admin" ? [["contratos","Contratos"],["usuarios","Usuários"]] : usuario?.papel==="fiscal" ? [["contratos","Contratos"]] : [])
+  ];
 
   return (
     <div style={{minHeight:"100vh",background:"#f8fafc",fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#0f172a"}}>
       <div style={{background:"#fff",borderBottom:"1px solid #e2e8f0",padding:"0 24px",display:"flex",alignItems:"center",height:58,gap:14,position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:34,height:34,background:"#0f172a",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#38bdf8"}}>❄</div>
-          <div><div style={{fontSize:14,fontWeight:700,letterSpacing:-.3}}>CotaFrio</div><div style={{fontSize:10,color:"#94a3b8",letterSpacing:.5}}>REFRIGERAÇÃO</div></div>
+          <div><div style={{fontSize:14,fontWeight:700,letterSpacing:-.3}}>CotaFacil</div><div style={{fontSize:10,color:"#94a3b8",letterSpacing:.5}}>SMP</div></div>
         </div>
         <div style={{display:"flex",gap:2,marginLeft:8}}>
           {abas.map(([v,l])=>(
@@ -916,6 +963,7 @@ export default function App() {
 
       {aba==="usuarios"&&usuario?.papel==="admin"&&<PainelUsuarios showToast={showToast}/>}
       {aba==="contratos"&&(usuario?.papel==="admin"||usuario?.papel==="fiscal")&&<PainelContratos showToast={showToast}/>}
+      {aba==="itens"&&<PainelItensPrevistos contratosAcessiveis={contratosAcessiveis} setContratos={setContratos} showToast={showToast} usuario={usuario} />}
 
       {aba==="cotacoes"&&(
         <div style={{maxWidth:1200,margin:"0 auto",padding:"22px 20px"}}>
@@ -932,9 +980,6 @@ export default function App() {
             {[["todos","Todos"],["vigente","Vigentes"],["avencer","A vencer"],["vencida","Vencidas"]].map(([s,l])=>
               <button key={s} onClick={()=>setFiltroStatus(s)} style={{border:`1px solid ${filtroStatus===s?"#0f172a":"#e2e8f0"}`,background:filtroStatus===s?"#0f172a":"#fff",color:filtroStatus===s?"#fff":"#64748b",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:500,cursor:"pointer"}}>{l}</button>
             )}
-            <select value={filtroCategoria} onChange={ev=>setFiltroCategoria(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 12px",fontSize:12,background:"#fff",color:"#475569",cursor:"pointer"}}>
-              <option value="todas">Todas categorias</option>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}
-            </select>
             {contratosAcessiveis.length>0&&(
               <select value={filtroContrato} onChange={ev=>setFiltroContrato(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 12px",fontSize:12,background:"#fff",color:"#475569",cursor:"pointer"}}>
                 <option value="todos">Todos os contratos</option>
@@ -966,7 +1011,7 @@ export default function App() {
                         <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,overflow:"hidden"}}>
                           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                             <thead><tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
-                              {["Código","Material","Categoria","Modo","Média saneada","Valor final","Vencimento","Status",...(podeEditar?[""]:[])] .map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:.4,whiteSpace:"nowrap"}}>{h}</th>)}
+                              {["Código","Material","Modo","Média saneada","Valor final","Vencimento","Status",...(podeEditar?[""]:[])] .map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:.4,whiteSpace:"nowrap"}}>{h}</th>)}
                             </tr></thead>
                             <tbody>
                               {lista.map((c,i)=>(
@@ -975,7 +1020,6 @@ export default function App() {
                                     onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":"#fafafa"}>
                                     <td style={{padding:"11px 14px",color:"#64748b",fontFamily:"monospace",fontSize:11}}>{c.codigo}</td>
                                     <td style={{padding:"11px 14px",fontWeight:500}}>{c.material}</td>
-                                    <td style={{padding:"11px 14px"}}><CatBadge cat={c.categoria}/></td>
                                     <td style={{padding:"11px 14px", fontSize:11}}>{c.precoDireto ? <span style={{color:"#b45309"}}>Direto</span> : <span style={{color:"#0369a1"}}>Calculado</span>}</td>
                                     <td style={{padding:"11px 14px",fontWeight:600}}>R$ {brl(c.mediaSaneada)}</td>
                                     <td style={{padding:"11px 14px",color:"#0369a1",fontWeight:700}}>R$ {brl(c.precoFinalDesconto)}</td>
@@ -1005,7 +1049,6 @@ export default function App() {
                                     <StatusBadge status={c.status}/>
                                   </div>
                                   <div style={{fontWeight:600,fontSize:13,marginBottom:4,lineHeight:1.3}}>{c.material}</div>
-                                  <CatBadge cat={c.categoria}/>
                                   <div style={{display:"flex",justifyContent:"space-between",marginTop:10,borderTop:"1px solid #f1f5f9",paddingTop:10}}>
                                     <div><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>MÉDIA SANEADA</div><div style={{fontSize:14,fontWeight:700}}>R$ {brl(c.mediaSaneada)}</div></div>
                                     <div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>VALOR FINAL</div><div style={{fontSize:14,fontWeight:700,color:"#0369a1"}}>R$ {brl(c.precoFinalDesconto)}</div></div>
@@ -1031,7 +1074,7 @@ export default function App() {
             <div onClick={ev=>ev.stopPropagation()} style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:620,maxHeight:"91vh",overflowY:"auto",padding:26}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
                 <div>
-                  <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace",marginBottom:4}}>{c.codigo} · {c.categoria}</div>
+                  <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace",marginBottom:4}}>{c.codigo}</div>
                   <div style={{fontSize:17,fontWeight:700,lineHeight:1.2}}>{c.material}</div>
                   {ctr&&<div style={{fontSize:12,color:"#0369a1",marginTop:4,fontWeight:500}}>{ctr.numero} — {ctr.contratanteNome||ctr.contratadaRazaoSocial}</div>}
                   <div style={{fontSize:12,color:"#64748b",marginTop:2}}>Base: {c.dataBase}</div>
