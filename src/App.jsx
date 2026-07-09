@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, getDoc, query, where } from "firebase/firestore";
+import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, getDoc } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 
 const firebaseConfig = {
@@ -27,6 +27,7 @@ async function criarUsuarioFirebase(email, senha) {
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────
+const CATEGORIAS = ["Tubulação", "Elétrico", "Refrigeração", "Gás", "Outro"];
 const STATUS_CONTRATO = {
   ativo:     { label:"Ativo",     color:"#16a34a", bg:"#dcfce7", border:"#86efac" },
   encerrado: { label:"Encerrado", color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
@@ -37,6 +38,7 @@ const SV = {
   avencer: { label:"A vencer", color:"#b45309", bg:"#fef3c7", border:"#fcd34d" },
   vencida: { label:"Vencida",  color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
 };
+
 const PAPEIS = {
   admin:     { label:"Admin",     bg:"#fef3c7", color:"#92400e", border:"#fcd34d" },
   fiscal:    { label:"Fiscal",    bg:"#dbeafe", color:"#1e40af", border:"#93c5fd" },
@@ -65,22 +67,11 @@ function calcBDI(mediaSaneada, bdi, desconto) {
   return { comBDI: mediaSaneada*(1+b/100), final: mediaSaneada*(1+b/100)*(1-d/100) };
 }
 function enriquecer(c) {
-  // Se for preço final, não faz saneamento
-  if (c.tipoPreco === "precoFinal") {
-    const preco = parseFloat(c.precoFinal) || 0;
-    return {
-      ...c,
-      fornecedores: [],
-      mediaGeral: 0,
-      mediaSaneada: 0,
-      menorSaneado: 0,
-      precoFinalBDI: preco,
-      precoFinalDesconto: preco,
-      status: calcStatusCot(c.dataElaboracao)
-    };
+  if (c.precoDireto) {
+    return { ...c, fornecedores: [], mediaGeral: c.valorFinalDireto, mediaSaneada: c.valorFinalDireto, menorSaneado: c.valorFinalDireto, precoFinalBDI: c.valorFinalDireto, precoFinalDesconto: c.valorFinalDireto, status: calcStatusCot(c.dataElaboracao) };
   }
   const {mediaGeral,mediaSaneada,menorSaneado,forn} = sanear(c.fornecedores||[]);
-  const {comBDI,final} = calcBDI(mediaSaneada, c.bdi, c.desconto);
+  const {comBDI,final} = calcBDI(mediaSaneada,c.bdi,c.desconto);
   return {...c,fornecedores:forn,mediaGeral,mediaSaneada,menorSaneado,precoFinalBDI:comBDI,precoFinalDesconto:final,status:calcStatusCot(c.dataElaboracao)};
 }
 function calcStatusCot(dt) {
@@ -95,37 +86,25 @@ const brl = n => Number(n||0).toLocaleString("pt-BR",{minimumFractionDigits:2});
 const pct = n => (n>=0?"+":"") + ((n||0)*100).toFixed(2)+"%";
 const fmtData = dt => dt ? new Date(dt+"T12:00:00").toLocaleDateString("pt-BR") : "—";
 
-// ── Dados de exemplo ──────────────────────────────────────────────────────
-const DADOS_COTACOES = [
-  {id:1,material:"Porca Sextavada 8mm Inox 304",codigo:"MAT-001",unidade:"UNID.",contratoId:"contrato-exemplo",dataBase:"Nov/2024",dataElaboracao:"2024-11-15",bdi:17.32,desconto:2.0,quantidade:100,observacoes:"Inox passivado 304",imagem:null,tipoPreco:"cotacao",precoFinal:null,fornecedores:[{nome:"Parafuso Fácil",url:"",valor:0.85},{nome:"Jofepar",url:"",valor:0.82},{nome:"Lojas Mixpar",url:"",valor:0.91}]},
-  {id:2,material:"Válvula Termostática Danfoss R22 – 12TR",codigo:"MAT-010",unidade:"UNID.",contratoId:"contrato-exemplo",dataBase:"Nov/2024",dataElaboracao:"2024-11-15",bdi:17.32,desconto:2.0,quantidade:1,observacoes:"Modelo 067N2009",imagem:null,tipoPreco:"cotacao",precoFinal:null,fornecedores:[{nome:"Chiller Peças",url:"",valor:1031.11},{nome:"Jet Frio",url:"",valor:1008.99},{nome:"Cibrel",url:"",valor:1375.53}]},
-  {id:3,material:"Graxa Azul FAG 500g",codigo:"MAT-005",unidade:"UNID.",contratoId:"contrato-exemplo",dataBase:"Nov/2024",dataElaboracao:"2024-02-10",bdi:17.32,desconto:2.0,quantidade:1,observacoes:"Para rolamentos",imagem:null,tipoPreco:"cotacao",precoFinal:null,fornecedores:[{nome:"C3 Multimarcas",url:"",valor:81.18},{nome:"Loja Proelis",url:"",valor:85.49},{nome:"Disk Peças",url:"",valor:90.45}]},
-];
-
-const emptyFormCotacao = {
-  material:"", codigo:"", unidade:"UNID.",
-  contratoId:"", dataBase:"", dataElaboracao:"",
-  bdi:17.32, desconto:2.0, quantidade:1,
-  observacoes:"", imagem:null,
-  tipoPreco:"cotacao", precoFinal:"",
-  fornecedores:[{nome:"",url:"",valor:""}]
-};
+const emptyFormCotacao = {material:"",codigo:"",categoria:"Refrigeração",unidade:"UNID.",contratoId:"",dataBase:"",dataElaboracao:"",quantidade:1,observacoes:"",imagem:null, precoDireto: false, valorFinalDireto: "", fornecedores:[{nome:"",url:"",valor:""}]};
 
 const emptyFormContrato = {
-  numero:"", processoSEI:"", objeto:"", statusContrato:"ativo",
-  contratanteNome:"", contratanteCNPJ:"", contratanteRepresentante:"", contratanteCargo:"",
-  contratadaRazaoSocial:"", contratadaCNPJ:"", contratadaEndereco:"", contratadaTelefone:"", contratadaEmail:"", contratadaRepresentante:"",
-  dataInicio:"", dataTermino:"",
-  prorrogavel:"sim", limiteProrrogacao:"",
-  valorMensal:"", valorTotal:"",
-  bdi:17.32, desconto:2.0,
-  fiscal:"", observacoes:""
+  numero:"",processoSEI:"",objeto:"",statusContrato:"ativo",
+  contratanteNome:"",contratanteCNPJ:"",contratanteRepresentante:"",contratanteCargo:"",
+  contratadaRazaoSocial:"",contratadaCNPJ:"",contratadaEndereco:"",contratadaTelefone:"",contratadaEmail:"",contratadaRepresentante:"",
+  dataInicio:"",dataTermino:"",prorrogavel:"sim",limiteProrrogacao:"",
+  valorMensal:"",valorTotal:"",
+  bdi: 17.32, desconto: 2.0, materiais: [],
+  fiscal:"",observacoes:""
 };
 
 // ── Badges ────────────────────────────────────────────────────────────────
 function StatusBadge({status,size}) {
   const s=SV[status]||SV.vencida;
   return <span style={{background:s.bg,color:s.color,border:`1px solid ${s.border}`,borderRadius:20,padding:size==="lg"?"4px 14px":"2px 10px",fontSize:size==="lg"?13:11,fontWeight:600,display:"inline-block",whiteSpace:"nowrap"}}>{s.label}</span>;
+}
+function CatBadge({cat}) {
+  return <span style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:500}}>{cat}</span>;
 }
 function RoleBadge({papel}) {
   const s=PAPEIS[papel]||PAPEIS.consultor;
@@ -169,44 +148,36 @@ function SaneamentoPanel({fornecedores}) {
 }
 
 // ── Modal de cotação ──────────────────────────────────────────────────────
-function FormModalCotacao({editId, initialForm, contratos, onSave, onClose}) {
-  const [form, setForm] = useState(initialForm);
-  const [erroContrato, setErroContrato] = useState(false);
-  const [tipoPreco, setTipoPreco] = useState(initialForm.tipoPreco || "cotacao");
-
-  // Quando o contrato selecionado muda, buscar BDI/desconto do contrato
-  useEffect(() => {
-    const contratoSelecionado = contratos.find(c => c.id === form.contratoId);
-    if (contratoSelecionado && tipoPreco === "cotacao") {
-      setForm(f => ({
-        ...f,
-        bdi: contratoSelecionado.bdi || 0,
-        desconto: contratoSelecionado.desconto || 0
-      }));
-    }
-  }, [form.contratoId, contratos, tipoPreco]);
-
-  const calc = useMemo(() => {
-    if (tipoPreco === "precoFinal") {
-      const preco = parseFloat(form.precoFinal) || 0;
-      return { mediaSaneada: 0, comBDI: preco, final: preco };
-    }
-    const { mediaSaneada } = sanear(form.fornecedores);
-    const { comBDI, final } = calcBDI(mediaSaneada, form.bdi, form.desconto);
-    return { mediaSaneada, comBDI, final };
-  }, [form.fornecedores, form.bdi, form.desconto, form.precoFinal, tipoPreco]);
-
-  function updForn(i,k,v){ setForm(f=>({...f,fornecedores:f.fornecedores.map((fo,idx)=>idx===i?{...fo,[k]:v}:fo)})); }
-  function handleImg(ev){ const file=ev.target.files[0]; if(!file)return; const r=new FileReader(); r.onload=x=>setForm(f=>({...f,imagem:x.target.result})); r.readAsDataURL(file); }
+function FormModalCotacao({editId,initialForm,contratos,onSave,onClose}) {
+  const [form,setForm]=useState(initialForm);
+  const [erroContrato,setErroContrato]=useState(false);
+  const calc=useMemo(()=>{const{mediaSaneada}=sanear(form.fornecedores||[]);const{comBDI,final}=calcBDI(mediaSaneada,form.bdi,form.desconto);return{mediaSaneada,comBDI,final};},[form.fornecedores,form.bdi,form.desconto]);
+  
+  function updForn(i,k,v){setForm(f=>({...f,fornecedores:f.fornecedores.map((fo,idx)=>idx===i?{...fo,[k]:v}:fo)}));}
+  function handleImg(ev){const file=ev.target.files[0];if(!file)return;const r=new FileReader();r.onload=x=>setForm(f=>({...f,imagem:x.target.result}));r.readAsDataURL(file);}
   const lbl=(txt,hint,req)=><label style={{fontSize:12,fontWeight:500,color:"#64748b",display:"block",marginBottom:3}}>{txt}{req&&<span style={{color:"#dc2626",marginLeft:2}}>*</span>}{hint&&<span style={{fontSize:10,color:"#94a3b8",marginLeft:5}}>{hint}</span>}</label>;
 
   function handleSave() {
     if (!form.contratoId) { setErroContrato(true); return; }
     setErroContrato(false);
-    if (tipoPreco === "precoFinal" && !form.precoFinal) {
-      // pode adicionar validação
+    
+    if(form.precoDireto) {
+        onSave({...form});
+    } else {
+        onSave({...form, mediaSaneada:calc.mediaSaneada, precoFinalBDI:calc.comBDI, precoFinalDesconto:calc.final});
     }
-    onSave({ ...form, tipoPreco, mediaSaneada: calc.mediaSaneada, precoFinalBDI: calc.comBDI, precoFinalDesconto: calc.final });
+  }
+
+  function handleContractChange(ev) {
+      const cid = ev.target.value;
+      const contrato = contratos.find(c => c.id === cid);
+      setForm(p => ({
+          ...p, 
+          contratoId: cid, 
+          bdi: contrato?.bdi || 0, 
+          desconto: contrato?.desconto || 0 
+      }));
+      setErroContrato(false);
   }
 
   return (
@@ -216,16 +187,11 @@ function FormModalCotacao({editId, initialForm, contratos, onSave, onClose}) {
 
         <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,marginBottom:10}}>IDENTIFICAÇÃO</div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
-          <div style={{gridColumn:"1/-1"}}>{lbl("Material / Descrição","",true)}<input value={form.material} onChange={ev=>setForm(p=>({...p,material:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
-          <div>{lbl("Código")}<input value={form.codigo||""} onChange={ev=>setForm(p=>({...p,codigo:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
-          <div>{lbl("Unidade")}<input value={form.unidade||""} onChange={ev=>setForm(p=>({...p,unidade:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
-
-          {/* Contrato — obrigatório */}
           <div style={{gridColumn:"1/-1"}}>
             {lbl("Contrato vinculado","",true)}
             <select
               value={form.contratoId||""}
-              onChange={ev=>{ setForm(p=>({...p,contratoId:ev.target.value})); setErroContrato(false); }}
+              onChange={handleContractChange}
               style={{width:"100%",border:`1px solid ${erroContrato?"#dc2626":"#e2e8f0"}`,borderRadius:8,padding:"8px 12px",fontSize:13,background:erroContrato?"#fef2f2":"#fff"}}>
               <option value="">— Selecione o contrato —</option>
               {contratos.map(c=><option key={c.id} value={c.id}>{c.numero} — {c.contratanteNome||c.contratadaRazaoSocial||""}</option>)}
@@ -234,57 +200,57 @@ function FormModalCotacao({editId, initialForm, contratos, onSave, onClose}) {
             {contratos.length===0&&<div style={{fontSize:11,color:"#b45309",marginTop:4}}>Nenhum contrato cadastrado. Cadastre um contrato antes de criar cotações.</div>}
           </div>
 
+          <div style={{gridColumn:"1/-1"}}>{lbl("Material / Descrição","",true)}<input value={form.material} onChange={ev=>setForm(p=>({...p,material:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
+          <div>{lbl("Código")}<input value={form.codigo||""} onChange={ev=>setForm(p=>({...p,codigo:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
+          <div>{lbl("Categoria")}<select value={form.categoria} onChange={ev=>setForm(p=>({...p,categoria:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}</select></div>
+          <div>{lbl("Unidade")}<input value={form.unidade||""} onChange={ev=>setForm(p=>({...p,unidade:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
+
           <div>{lbl("Data base")}<input value={form.dataBase||""} onChange={ev=>setForm(p=>({...p,dataBase:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
           <div>{lbl("Data de elaboração","",true)}<input type="date" value={form.dataElaboracao||""} onChange={ev=>setForm(p=>({...p,dataElaboracao:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
           <div>{lbl("Quantidade")}<input type="number" value={form.quantidade||""} onChange={ev=>setForm(p=>({...p,quantidade:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/></div>
         </div>
 
-        {/* Tipo de preço: toggle */}
-        <div style={{display:"flex",gap:12,marginBottom:16,alignItems:"center"}}>
-          <span style={{fontSize:12,fontWeight:600,color:"#64748b"}}>Tipo de preço:</span>
-          <button
-            onClick={()=>setTipoPreco("cotacao")}
-            style={{background:tipoPreco==="cotacao"?"#0f172a":"#f1f5f9",color:tipoPreco==="cotacao"?"#fff":"#475569",border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer"}}
-          >Cotação com fornecedores</button>
-          <button
-            onClick={()=>setTipoPreco("precoFinal")}
-            style={{background:tipoPreco==="precoFinal"?"#0f172a":"#f1f5f9",color:tipoPreco==="precoFinal"?"#fff":"#475569",border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer"}}
-          >Preço final</button>
+        <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,marginBottom:10, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <span>INSERÇÃO DE PREÇOS</span>
+            <label style={{display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: "#0f172a"}}>
+                <input type="checkbox" checked={form.precoDireto} onChange={ev => setForm(p => ({...p, precoDireto: ev.target.checked}))} />
+                Inserir preço final diretamente (já c/ BDI)
+            </label>
         </div>
 
-        {tipoPreco === "precoFinal" ? (
-          <div style={{marginBottom:16}}>
-            {lbl("Valor final (R$)","",true)}
-            <input type="number" step="0.01" value={form.precoFinal||""} onChange={ev=>setForm(p=>({...p,precoFinal:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}/>
-          </div>
+        {form.precoDireto ? (
+            <div style={{background:"#f8fafc",borderRadius:10,padding:"14px",marginBottom:20}}>
+                {lbl("Valor Final (R$) - Unidade")}
+                <input type="number" step="0.01" min="0" placeholder="0,00" value={form.valorFinalDireto} onChange={ev=>setForm(p=>({...p,valorFinalDireto:parseFloat(ev.target.value)||0}))} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12, width: "200px"}}/>
+                <div style={{fontSize: 11, color: "#64748b", marginTop: 8}}>O valor inserido será considerado como preço final já com BDI e descontos aplicados.</div>
+            </div>
         ) : (
-          <>
-            <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,marginBottom:10}}>FONTES DE PESQUISA DE PREÇOS</div>
-            <div style={{background:"#f8fafc",borderRadius:10,padding:"14px",marginBottom:4}}>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 110px 28px",gap:6,marginBottom:6}}>{["Fornecedor / Fonte","URL (opcional)","Valor (R$)",""].map(h=><div key={h} style={{fontSize:10,color:"#94a3b8",fontWeight:600,padding:"0 2px"}}>{h}</div>)}</div>
-              {form.fornecedores.map((f,i)=>(
-                <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 110px 28px",gap:6,marginBottom:6,alignItems:"center"}}>
-                  <input placeholder="Ex: Jofepar, SINAPI 39751" value={f.nome} onChange={ev=>updForn(i,"nome",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
-                  <input placeholder="https://..." value={f.url||""} onChange={ev=>updForn(i,"url",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
-                  <input type="number" step="0.01" min="0" placeholder="0,00" value={f.valor} onChange={ev=>updForn(i,"valor",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
-                  <button onClick={()=>setForm(f=>({...f,fornecedores:f.fornecedores.filter((_,idx)=>idx!==i)}))} style={{background:"none",border:"none",color:"#dc2626",fontSize:20,lineHeight:1,cursor:"pointer"}}>×</button>
+            <>
+                <div style={{background:"#f8fafc",borderRadius:10,padding:"14px",marginBottom:4}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 110px 28px",gap:6,marginBottom:6}}>{["Fornecedor / Fonte","URL (opcional)","Valor (R$)",""].map(h=><div key={h} style={{fontSize:10,color:"#94a3b8",fontWeight:600,padding:"0 2px"}}>{h}</div>)}</div>
+                {(form.fornecedores||[]).map((f,i)=>(
+                    <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 110px 28px",gap:6,marginBottom:6,alignItems:"center"}}>
+                    <input placeholder="Ex: Jofepar, SINAPI 39751" value={f.nome} onChange={ev=>updForn(i,"nome",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
+                    <input placeholder="https://..." value={f.url||""} onChange={ev=>updForn(i,"url",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
+                    <input type="number" step="0.01" min="0" placeholder="0,00" value={f.valor} onChange={ev=>updForn(i,"valor",ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:7,padding:"7px 10px",fontSize:12}}/>
+                    <button onClick={()=>setForm(f=>({...f,fornecedores:f.fornecedores.filter((_,idx)=>idx!==i)}))} style={{background:"none",border:"none",color:"#dc2626",fontSize:20,lineHeight:1,cursor:"pointer"}}>×</button>
+                    </div>
+                ))}
+                <button onClick={()=>setForm(f=>({...f,fornecedores:[...(f.fornecedores||[]),{nome:"",url:"",valor:""}]}))} style={{marginTop:4,fontSize:12,border:"1px dashed #cbd5e1",borderRadius:7,padding:"6px 14px",background:"#fff",color:"#64748b",width:"100%",cursor:"pointer"}}>+ Adicionar fonte</button>
                 </div>
-              ))}
-              <button onClick={()=>setForm(f=>({...f,fornecedores:[...f.fornecedores,{nome:"",url:"",valor:""}]}))} style={{marginTop:4,fontSize:12,border:"1px dashed #cbd5e1",borderRadius:7,padding:"6px 14px",background:"#fff",color:"#64748b",width:"100%",cursor:"pointer"}}>+ Adicionar fonte</button>
-            </div>
-            <SaneamentoPanel fornecedores={form.fornecedores}/>
+                <SaneamentoPanel fornecedores={form.fornecedores||[]}/>
 
-            <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,margin:"20px 0 10px"}}>PARÂMETROS DE CÁLCULO (do contrato)</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-              <div>{lbl("BDI (%)")}<input type="number" step="0.01" value={form.bdi||""} disabled style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13,background:"#f1f5f9"}}/></div>
-              <div>{lbl("Desconto licitação (%)")}<input type="number" step="0.01" value={form.desconto||""} disabled style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13,background:"#f1f5f9"}}/></div>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:20}}>
-              <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#94a3b8",fontWeight:600,marginBottom:4}}>MÉDIA SANEADA</div><div style={{fontSize:17,fontWeight:800,color:"#0f172a"}}>R$ {brl(calc.mediaSaneada)}</div></div>
-              <div style={{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#1e40af",fontWeight:600,marginBottom:4}}>VALOR C/ BDI ({form.bdi||0}%)</div><div style={{fontSize:17,fontWeight:800,color:"#1d4ed8"}}>R$ {brl(calc.comBDI)}</div></div>
-              <div style={{background:"#dcfce7",border:"1px solid #86efac",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#166534",fontWeight:600,marginBottom:4}}>VALOR FINAL ({form.desconto||0}% desc.)</div><div style={{fontSize:17,fontWeight:800,color:"#16a34a"}}>R$ {brl(calc.final)}</div></div>
-            </div>
-          </>
+                <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,margin:"20px 0 10px"}}>PARÂMETROS DE CÁLCULO (Automáticos do Contrato)</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                    <div style={{background:"#f1f5f9", padding: "8px 12px", borderRadius: 8, fontSize: 13, color: "#64748b"}}>BDI: {form.bdi||0}%</div>
+                    <div style={{background:"#f1f5f9", padding: "8px 12px", borderRadius: 8, fontSize: 13, color: "#64748b"}}>Desconto: {form.desconto||0}%</div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:20}}>
+                <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#94a3b8",fontWeight:600,marginBottom:4}}>MÉDIA SANEADA</div><div style={{fontSize:17,fontWeight:800,color:"#0f172a"}}>R$ {brl(calc.mediaSaneada)}</div></div>
+                <div style={{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#1e40af",fontWeight:600,marginBottom:4}}>VALOR C/ BDI ({form.bdi||0}%)</div><div style={{fontSize:17,fontWeight:800,color:"#1d4ed8"}}>R$ {brl(calc.comBDI)}</div></div>
+                <div style={{background:"#dcfce7",border:"1px solid #86efac",borderRadius:10,padding:"12px 14px"}}><div style={{fontSize:10,color:"#166534",fontWeight:600,marginBottom:4}}>VALOR FINAL ({form.desconto||0}% desc.)</div><div style={{fontSize:17,fontWeight:800,color:"#16a34a"}}>R$ {brl(calc.final)}</div></div>
+                </div>
+            </>
         )}
 
         <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.6,marginBottom:10}}>EXTRAS</div>
@@ -351,13 +317,11 @@ function FormModalContrato({editId,initialForm,onSave,onClose}) {
           </select></div>
           {form.prorrogavel==="sim"&&inp("Limite de prorrogação (meses)","limiteProrrogacao","number")}
 
-          {sec("VALORES")}
+          {sec("VALORES E PARÂMETROS")}
           {inp("Valor mensal estimado (R$)","valorMensal","number")}
           {inp("Valor total (R$)","valorTotal","number")}
-
-          {sec("PARÂMETROS DE CÁLCULO")}
           {inp("BDI (%)","bdi","number")}
-          {inp("Desconto licitação (%)","desconto","number")}
+          {inp("Desconto Licitação (%)","desconto","number")}
 
           {sec("GESTÃO")}
           {inp("Fiscal do contrato","fiscal")}
@@ -373,197 +337,6 @@ function FormModalContrato({editId,initialForm,onSave,onClose}) {
   );
 }
 
-// ── Componente de Materiais Previstos ────────────────────────────────────
-function MateriaisPrevistos({ contratoId, showToast }) {
-  const [itens, setItens] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [modalAberto, setModalAberto] = useState(false);
-  const [editando, setEditando] = useState(null);
-  const [formItem, setFormItem] = useState({ nome: "", quantidade: 1, unidade: "UNID.", precoUnitario: "" });
-  const [modalReajuste, setModalReajuste] = useState(false);
-  const [percentual, setPercentual] = useState("");
-
-  useEffect(() => {
-    if (contratoId) carregar();
-  }, [contratoId]);
-
-  async function carregar() {
-    setLoading(true);
-    try {
-      const q = query(collection(db, "materiaisPrevistos"), where("contratoId", "==", contratoId));
-      const snap = await getDocs(q);
-      setItens(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    } catch(e) {
-      showToast("Erro ao carregar materiais previstos.", "erro");
-    }
-    setLoading(false);
-  }
-
-  async function salvarItem() {
-    if (!formItem.nome || !formItem.precoUnitario) {
-      showToast("Preencha nome e preço unitário.", "erro");
-      return;
-    }
-    const preco = parseFloat(formItem.precoUnitario) || 0;
-    const qtd = parseFloat(formItem.quantidade) || 1;
-    const total = preco * qtd;
-    const dados = {
-      contratoId,
-      nome: formItem.nome,
-      quantidade: qtd,
-      unidade: formItem.unidade || "UNID.",
-      precoUnitario: preco,
-      valorTotal: total
-    };
-    try {
-      if (editando) {
-        await setDoc(doc(db, "materiaisPrevistos", editando.id), { ...editando, ...dados });
-        setItens(itens.map(i => i.id === editando.id ? { ...i, ...dados } : i));
-        showToast("Item atualizado.");
-      } else {
-        const ref = doc(collection(db, "materiaisPrevistos"));
-        await setDoc(ref, { ...dados, criadoEm: new Date().toISOString() });
-        setItens([...itens, { id: ref.id, ...dados }]);
-        showToast("Item adicionado.");
-      }
-      setModalAberto(false);
-      setEditando(null);
-      setFormItem({ nome: "", quantidade: 1, unidade: "UNID.", precoUnitario: "" });
-    } catch(e) {
-      showToast("Erro ao salvar item.", "erro");
-    }
-  }
-
-  async function excluirItem(id) {
-    if (!window.confirm("Excluir este material previsto?")) return;
-    try {
-      await deleteDoc(doc(db, "materiaisPrevistos", id));
-      setItens(itens.filter(i => i.id !== id));
-      showToast("Item removido.");
-    } catch(e) {
-      showToast("Erro ao excluir.", "erro");
-    }
-  }
-
-  async function aplicarReajuste() {
-    const pct = parseFloat(percentual);
-    if (isNaN(pct) || pct === 0) { showToast("Digite um percentual válido.", "erro"); return; }
-    const fator = 1 + pct / 100;
-    try {
-      const updates = itens.map(item => {
-        const novoPreco = item.precoUnitario * fator;
-        const novoTotal = novoPreco * item.quantidade;
-        const dados = { ...item, precoUnitario: novoPreco, valorTotal: novoTotal };
-        return setDoc(doc(db, "materiaisPrevistos", item.id), dados);
-      });
-      await Promise.all(updates);
-      setItens(itens.map(item => ({ ...item, precoUnitario: item.precoUnitario * fator, valorTotal: item.precoUnitario * fator * item.quantidade })));
-      showToast(`Reajuste de ${pct}% aplicado a todos os itens.`);
-      setModalReajuste(false);
-      setPercentual("");
-    } catch(e) {
-      showToast("Erro ao aplicar reajuste.", "erro");
-    }
-  }
-
-  function abrirEdicao(item) {
-    setEditando(item);
-    setFormItem({ nome: item.nome, quantidade: item.quantidade, unidade: item.unidade, precoUnitario: item.precoUnitario });
-    setModalAberto(true);
-  }
-
-  if (!contratoId) return null;
-
-  return (
-    <div style={{ marginTop: 24, borderTop: "1px solid #e2e8f0", paddingTop: 20 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>Materiais Previstos</div>
-          <div style={{ fontSize: 12, color: "#94a3b8" }}>{itens.length} {itens.length === 1 ? "item" : "itens"}</div>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => { setEditando(null); setFormItem({ nome: "", quantidade: 1, unidade: "UNID.", precoUnitario: "" }); setModalAberto(true); }} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            + Adicionar
-          </button>
-          {itens.length > 0 && (
-            <button onClick={() => setModalReajuste(true)} style={{ background: "#fef3c7", color: "#b45309", border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              Reajustar
-            </button>
-          )}
-        </div>
-      </div>
-
-      {loading ? <div style={{ padding: 20, textAlign: "center", color: "#94a3b8" }}>Carregando...</div> : (
-        itens.length === 0 ? <div style={{ padding: 20, textAlign: "center", color: "#94a3b8" }}>Nenhum material previsto cadastrado.</div> : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead><tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-                <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Nome</th>
-                <th style={{ padding: "8px 12px", textAlign: "right", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Qtd</th>
-                <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Unid.</th>
-                <th style={{ padding: "8px 12px", textAlign: "right", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Preço unit.</th>
-                <th style={{ padding: "8px 12px", textAlign: "right", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Valor total</th>
-                <th style={{ padding: "8px 12px", textAlign: "center", fontSize: 11, fontWeight: 600, color: "#64748b" }}>Ações</th>
-              </tr></thead>
-              <tbody>
-                {itens.map((item, i) => (
-                  <tr key={item.id} style={{ borderBottom: "1px solid #f1f5f9", background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                    <td style={{ padding: "8px 12px", fontWeight: 500 }}>{item.nome}</td>
-                    <td style={{ padding: "8px 12px", textAlign: "right" }}>{item.quantidade}</td>
-                    <td style={{ padding: "8px 12px" }}>{item.unidade}</td>
-                    <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "monospace" }}>R$ {brl(item.precoUnitario)}</td>
-                    <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: "monospace", fontWeight: 600 }}>R$ {brl(item.valorTotal)}</td>
-                    <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                      <button onClick={() => abrirEdicao(item)} style={{ background: "none", border: "1px solid #e2e8f0", borderRadius: 6, padding: "2px 10px", fontSize: 11, color: "#475569", cursor: "pointer", marginRight: 4 }}>Editar</button>
-                      <button onClick={() => excluirItem(item.id)} style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 6, padding: "2px 10px", fontSize: 11, color: "#dc2626", cursor: "pointer" }}>Excluir</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      )}
-
-      {/* Modal de adicionar/editar item */}
-      {modalAberto && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setModalAberto(false)}>
-          <div onClick={ev=>ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, padding: 28 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>{editando ? "Editar material" : "Novo material previsto"}</div>
-            <div style={{ display: "grid", gap: 14 }}>
-              <div><label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 4 }}>Nome *</label><input value={formItem.nome} onChange={ev=>setFormItem(p=>({...p,nome:ev.target.value}))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box" }}/></div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                <div><label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 4 }}>Qtd.</label><input type="number" value={formItem.quantidade} onChange={ev=>setFormItem(p=>({...p,quantidade:ev.target.value}))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box" }}/></div>
-                <div><label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 4 }}>Unid.</label><input value={formItem.unidade} onChange={ev=>setFormItem(p=>({...p,unidade:ev.target.value}))} placeholder="UNID." style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box" }}/></div>
-                <div><label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 4 }}>Preço unit. (R$) *</label><input type="number" step="0.01" value={formItem.precoUnitario} onChange={ev=>setFormItem(p=>({...p,precoUnitario:ev.target.value}))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box" }}/></div>
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-              <button onClick={() => setModalAberto(false)} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-              <button onClick={salvarItem} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 22px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{editando ? "Salvar" : "Adicionar"}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de reajuste */}
-      {modalReajuste && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setModalReajuste(false)}>
-          <div onClick={ev=>ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 400, padding: 28 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Reajustar preços</div>
-            <div style={{ fontSize: 13, color: "#475569", marginBottom: 16 }}>Aplicar um percentual de aumento (ou redução) a todos os itens.</div>
-            <div><label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 4 }}>Percentual (%)</label><input type="number" step="0.01" value={percentual} onChange={ev=>setPercentual(ev.target.value)} placeholder="Ex: 10 para +10%" style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 12px", fontSize: 13, boxSizing: "border-box" }}/></div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
-              <button onClick={() => setModalReajuste(false)} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-              <button onClick={aplicarReajuste} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 22px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Aplicar</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Painel de Contratos ───────────────────────────────────────────────────
 function PainelContratos({showToast}) {
   const [contratos,setContratos]=useState([]);
@@ -571,11 +344,15 @@ function PainelContratos({showToast}) {
   const [modal,setModal]=useState(false);
   const [editando,setEditando]=useState(null);
   const [detalhe,setDetalhe]=useState(null);
+  
+  // Estado para materiais do contrato selecionado
+  const [novoMaterial, setNovoMaterial] = useState({nome:"", unidade:"", valor:""});
+  const [reajustePct, setReajustePct] = useState("");
 
   useEffect(()=>{carregar();},[]);
   async function carregar(){
     setLoading(true);
-    try { const snap=await getDocs(collection(db,"contratos")); setContratos(snap.docs.map(d=>({id:d.id,...d.data()}))); }
+    try { const snap=await getDocs(collection(db,"contratos")); setContratos(snap.docs.map(d=>({id:d.id, materiais:[], ...d.data()}))); }
     catch(e){ showToast("Erro ao carregar contratos.","erro"); }
     finally{ setLoading(false); }
   }
@@ -592,7 +369,7 @@ function PainelContratos({showToast}) {
         showToast("Contrato atualizado.");
       } else {
         const id="contrato-"+Date.now();
-        const novo={...form,id,criadoEm:new Date().toISOString()};
+        const novo={...form,id,criadoEm:new Date().toISOString(), materiais: []};
         await setDoc(doc(db,"contratos",id),novo);
         setContratos(p=>[...p,novo]);
         showToast("Contrato cadastrado.");
@@ -605,6 +382,47 @@ function PainelContratos({showToast}) {
     if(!window.confirm("Excluir este contrato? As cotações vinculadas não serão excluídas.")) return;
     try{ await deleteDoc(doc(db,"contratos",id)); setContratos(p=>p.filter(c=>c.id!==id)); setDetalhe(null); showToast("Contrato removido."); }
     catch(e){ showToast("Erro ao excluir.","erro"); }
+  }
+
+  async function addMaterial() {
+      if(!novoMaterial.nome || !novoMaterial.valor) return;
+      const matAdd = {...novoMaterial, id: Date.now().toString(), valor: parseFloat(novoMaterial.valor)};
+      const novosMateriais = [...(detalhe.materiais || []), matAdd];
+      
+      try {
+          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
+          setDetalhe({...detalhe, materiais: novosMateriais});
+          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
+          setNovoMaterial({nome:"", unidade:"", valor:""});
+          showToast("Material adicionado.");
+      } catch(e) { showToast("Erro ao adicionar material.", "erro"); }
+  }
+
+  async function delMaterial(idMat) {
+      const novosMateriais = detalhe.materiais.filter(m => m.id !== idMat);
+      try {
+          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
+          setDetalhe({...detalhe, materiais: novosMateriais});
+          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
+      } catch(e) { showToast("Erro ao remover material.", "erro"); }
+  }
+
+  async function aplicarReajuste() {
+      const pct = parseFloat(reajustePct);
+      if(isNaN(pct) || !detalhe.materiais?.length) return;
+      
+      const novosMateriais = detalhe.materiais.map(m => ({
+          ...m, 
+          valor: m.valor * (1 + (pct/100))
+      }));
+
+      try {
+          await setDoc(doc(db,"contratos",detalhe.id), {materiais: novosMateriais}, {merge:true});
+          setDetalhe({...detalhe, materiais: novosMateriais});
+          setContratos(p=>p.map(c=>c.id===detalhe.id?{...c, materiais: novosMateriais}:c));
+          setReajustePct("");
+          showToast("Reajuste aplicado com sucesso.");
+      } catch(e) { showToast("Erro ao reajustar materiais.", "erro"); }
   }
 
   return (
@@ -659,9 +477,7 @@ function PainelContratos({showToast}) {
               {titulo:"CONTRATANTE",campos:[{l:"Nome",v:detalhe.contratanteNome},{l:"CNPJ",v:detalhe.contratanteCNPJ},{l:"Representante",v:detalhe.contratanteRepresentante},{l:"Cargo",v:detalhe.contratanteCargo}]},
               {titulo:"CONTRATADA",campos:[{l:"Razão social",v:detalhe.contratadaRazaoSocial},{l:"CNPJ",v:detalhe.contratadaCNPJ},{l:"Endereço",v:detalhe.contratadaEndereco},{l:"Telefone",v:detalhe.contratadaTelefone},{l:"E-mail",v:detalhe.contratadaEmail},{l:"Representante",v:detalhe.contratadaRepresentante}]},
               {titulo:"VIGÊNCIA",campos:[{l:"Início",v:fmtData(detalhe.dataInicio)},{l:"Término",v:fmtData(detalhe.dataTermino)},{l:"Prorrogável",v:detalhe.prorrogavel==="sim"?"Sim":"Não"},{l:"Limite prorrog.",v:detalhe.limiteProrrogacao||"—"}]},
-              {titulo:"VALORES",campos:[{l:"Valor mensal",v:"R$ "+brl(detalhe.valorMensal)},{l:"Valor total",v:"R$ "+brl(detalhe.valorTotal)}]},
-              {titulo:"PARÂMETROS DE CÁLCULO",campos:[{l:"BDI",v:detalhe.bdi?detalhe.bdi+"%":"—"},{l:"Desconto",v:detalhe.desconto?detalhe.desconto+"%":"—"}]},
-              {titulo:"GESTÃO",campos:[{l:"Fiscal",v:detalhe.fiscal||"—"},{l:"Observações",v:detalhe.observacoes||"—"}]},
+              {titulo:"VALORES E PARÂMETROS",campos:[{l:"Valor total",v:"R$ "+brl(detalhe.valorTotal)},{l:"BDI (%)",v:detalhe.bdi},{l:"Desconto (%)",v:detalhe.desconto}]},
             ].map(sec=>(
               <div key={sec.titulo} style={{marginBottom:16}}>
                 <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.5,marginBottom:8}}>{sec.titulo}</div>
@@ -675,11 +491,40 @@ function PainelContratos({showToast}) {
                 </div>
               </div>
             ))}
+            
+            {/* Seção de Materiais do Contrato */}
+            <div style={{marginBottom: 16, borderTop: "1px solid #e2e8f0", paddingTop: 16}}>
+                <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:"#94a3b8",letterSpacing:.5}}>MATERIAIS PREVISTOS (Sem cotação)</div>
+                    <div style={{display: "flex", gap: 6}}>
+                        <input type="number" placeholder="Reajuste (%)" value={reajustePct} onChange={e=>setReajustePct(e.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"4px 8px",fontSize:11, width: 90}}/>
+                        <button onClick={aplicarReajuste} style={{background:"#0369a1",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Aplicar</button>
+                    </div>
+                </div>
+                
+                <div style={{background:"#f8fafc",borderRadius:8,padding:8, marginBottom: 8}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 70px 100px 30px",gap:6,alignItems:"center"}}>
+                        <input placeholder="Nome do material" value={novoMaterial.nome} onChange={e=>setNovoMaterial({...novoMaterial,nome:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
+                        <input placeholder="Unid." value={novoMaterial.unidade} onChange={e=>setNovoMaterial({...novoMaterial,unidade:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
+                        <input type="number" step="0.01" placeholder="Valor (R$)" value={novoMaterial.valor} onChange={e=>setNovoMaterial({...novoMaterial,valor:e.target.value})} style={{border:"1px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:12}}/>
+                        <button onClick={addMaterial} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:6,padding:"6px",fontSize:14,cursor:"pointer",display:"flex",justifyContent:"center"}}>+</button>
+                    </div>
+                </div>
 
-            {/* Materiais Previstos */}
-            <MateriaisPrevistos contratoId={detalhe.id} showToast={showToast} />
+                <div style={{maxHeight: 150, overflowY:"auto"}}>
+                    {(detalhe.materiais || []).map((m, i) => (
+                        <div key={m.id} style={{display:"grid",gridTemplateColumns:"1fr 70px 100px 30px",gap:6,alignItems:"center", padding: "6px 8px", borderBottom: "1px solid #f1f5f9", fontSize: 12}}>
+                            <div style={{fontWeight: 500}}>{m.nome}</div>
+                            <div style={{color: "#64748b"}}>{m.unidade}</div>
+                            <div style={{fontWeight: 600}}>R$ {brl(m.valor)}</div>
+                            <button onClick={()=>delMaterial(m.id)} style={{background:"none",border:"none",color:"#dc2626",fontSize:16,cursor:"pointer"}}>×</button>
+                        </div>
+                    ))}
+                    {(!detalhe.materiais || detalhe.materiais.length === 0) && <div style={{padding: 10, textAlign: "center", color: "#94a3b8", fontSize: 12}}>Nenhum material cadastrado neste contrato.</div>}
+                </div>
+            </div>
 
-            <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
               <button onClick={()=>excluir(detalhe.id)} style={{border:"1px solid #fca5a5",background:"#fff",color:"#dc2626",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Excluir</button>
               <button onClick={()=>abrirEditar(detalhe)} style={{border:"1px solid #e2e8f0",background:"#fff",color:"#0f172a",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Editar</button>
               <button onClick={()=>setDetalhe(null)} style={{background:"#0f172a",color:"#fff",border:"none",borderRadius:8,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Fechar</button>
@@ -908,6 +753,7 @@ export default function App() {
   const [loading,setLoading]=useState(true);
   const [view,setView]=useState("lista");
   const [filtroStatus,setFiltroStatus]=useState("todos");
+  const [filtroCategoria,setFiltroCategoria]=useState("todas");
   const [filtroContrato,setFiltroContrato]=useState("todos");
   const [busca,setBusca]=useState("");
   const [modalForm,setModalForm]=useState(false);
@@ -929,6 +775,7 @@ export default function App() {
 
   useEffect(()=>{
     const timer = setTimeout(()=>{ setAuthLoading(false); }, 10000);
+
     const unsub=onAuthStateChanged(auth,async(fireUser)=>{
       clearTimeout(timer);
       try {
@@ -966,11 +813,7 @@ export default function App() {
       try{
         const [snapC,snapCot]=await Promise.all([getDocs(collection(db,"contratos")),getDocs(collection(db,"cotacoes"))]);
         setContratos(snapC.docs.map(d=>({id:d.id,...d.data()})));
-        if(snapCot.empty){
-          const lote=DADOS_COTACOES.map(enriquecer);
-          await Promise.all(lote.map(c=>setDoc(doc(db,"cotacoes",String(c.id)),c)));
-          setCotacoes(lote);
-        } else {
+        if(!snapCot.empty){
           const dados=snapCot.docs.map(d=>enriquecer(d.data()));
           dados.sort((a,b)=>a.id-b.id);
           setCotacoes(dados);
@@ -987,10 +830,22 @@ export default function App() {
       if(c.contratoId&&!ids.includes(c.contratoId)) return false;
     }
     if(filtroStatus!=="todos"&&c.status!==filtroStatus) return false;
+    if(filtroCategoria!=="todas"&&c.categoria!==filtroCategoria) return false;
     if(filtroContrato!=="todos"&&c.contratoId!==filtroContrato) return false;
     if(busca&&!c.material.toLowerCase().includes(busca.toLowerCase())&&!c.codigo?.toLowerCase().includes(busca.toLowerCase())) return false;
     return true;
-  }),[cotacoes,filtroStatus,filtroContrato,busca,usuario]);
+  }),[cotacoes,filtroStatus,filtroCategoria,filtroContrato,busca,usuario]);
+
+  // Agrupando cotações por contrato
+  const cotacoesAgrupadas = useMemo(() => {
+      const grupos = {};
+      filtradas.forEach(c => {
+          const key = c.contratoId || "sem_contrato";
+          if (!grupos[key]) grupos[key] = [];
+          grupos[key].push(c);
+      });
+      return grupos;
+  }, [filtradas]);
 
   const stats=useMemo(()=>{
     const base=cotacoes.filter(c=>{
@@ -1001,7 +856,7 @@ export default function App() {
   },[cotacoes,usuario]);
 
   function abrirNova(){setFormInicial(emptyFormCotacao);setEditId(null);setModalForm(true);}
-  function abrirEditar(c){setFormInicial({...c,fornecedores:c.fornecedores.map(f=>({...f}))});setEditId(c.id);setModalForm(true);setDetalhe(null);}
+  function abrirEditar(c){setFormInicial({...c,fornecedores:(c.fornecedores||[]).map(f=>({...f}))});setEditId(c.id);setModalForm(true);setDetalhe(null);}
 
   async function salvar(form){
     if(!form.material||!form.dataElaboracao){showToast("Preencha material e data.","erro");return;}
@@ -1009,7 +864,7 @@ export default function App() {
     const nova=enriquecer(form);
     try{
       if(editId){const a={...nova,id:editId};await setDoc(doc(db,"cotacoes",String(editId)),a);setCotacoes(p=>p.map(c=>c.id===editId?a:c));showToast("Cotação atualizada.");}
-      else{const nid=Math.max(0,...cotacoes.map(c=>c.id))+1;const n2={...nova,id:nid};await setDoc(doc(db,"cotacoes",String(nid)),n2);setCotacoes(p=>[...p,n2]);showToast("Cotação cadastrada.");}
+      else{const nid=Math.max(0,...cotacoes.map(c=>c.id||0))+1;const n2={...nova,id:nid};await setDoc(doc(db,"cotacoes",String(nid)),n2);setCotacoes(p=>[...p,n2]);showToast("Cotação cadastrada.");}
     } catch(e){showToast("Erro ao salvar cotação.","erro");return;}
     setModalForm(false);
   }
@@ -1024,7 +879,6 @@ export default function App() {
     <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'DM Sans','Segoe UI',sans-serif",color:"#64748b"}}>
       <div style={{width:48,height:48,background:"#0f172a",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"#38bdf8"}}>❄</div>
       <div style={{fontSize:14,fontWeight:500}}>Verificando sessão...</div>
-      <div style={{fontSize:12,color:"#94a3b8"}}>Se esta tela não avançar, <button onClick={()=>window.location.reload()} style={{background:"none",border:"none",color:"#0369a1",cursor:"pointer",fontSize:12,textDecoration:"underline",padding:0}}>clique aqui para recarregar</button>.</div>
     </div>
   );
   if(!authUser) return <TelaLogin/>;
@@ -1075,9 +929,12 @@ export default function App() {
           </div>
 
           <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-            {[["todos","Todos"],["vigente","Vigentes"],["avencer","A vencer"],["vencida","Vencidas"]].map(([s,l])=>(
+            {[["todos","Todos"],["vigente","Vigentes"],["avencer","A vencer"],["vencida","Vencidas"]].map(([s,l])=>
               <button key={s} onClick={()=>setFiltroStatus(s)} style={{border:`1px solid ${filtroStatus===s?"#0f172a":"#e2e8f0"}`,background:filtroStatus===s?"#0f172a":"#fff",color:filtroStatus===s?"#fff":"#64748b",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:500,cursor:"pointer"}}>{l}</button>
-            ))}
+            )}
+            <select value={filtroCategoria} onChange={ev=>setFiltroCategoria(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 12px",fontSize:12,background:"#fff",color:"#475569",cursor:"pointer"}}>
+              <option value="todas">Todas categorias</option>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}
+            </select>
             {contratosAcessiveis.length>0&&(
               <select value={filtroContrato} onChange={ev=>setFiltroContrato(ev.target.value)} style={{border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 12px",fontSize:12,background:"#fff",color:"#475569",cursor:"pointer"}}>
                 <option value="todos">Todos os contratos</option>
@@ -1085,74 +942,84 @@ export default function App() {
               </select>
             )}
             <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-              {[["lista","⊟ Lista"],["cards","⊞ Cards"]].map(([v,l])=>(
+              {[["lista","⊟ Lista"],["cards","⊞ Cards"]].map(([v,l])=>
                 <button key={v} onClick={()=>setView(v)} style={{border:`1px solid ${view===v?"#0f172a":"#e2e8f0"}`,background:view===v?"#0f172a":"#fff",color:view===v?"#fff":"#64748b",borderRadius:8,padding:"6px 12px",fontSize:12,cursor:"pointer"}}>{l}</button>
-              ))}
+              )}
             </div>
           </div>
 
-          <div style={{fontSize:12,color:"#94a3b8",marginBottom:10}}>{filtradas.length} {filtradas.length===1?"cotação encontrada":"cotações encontradas"}</div>
+          {filtradas.length===0&&<div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhuma cotação encontrada.</div>}
 
-          {view==="lista"&&(
-            <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,overflow:"hidden"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                <thead><tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
-                  {["Código","Material","Unidade","Contrato","Média saneada","Valor final","Vencimento","Status",...(podeEditar?[""]:[])].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:.4,whiteSpace:"nowrap"}}>{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {filtradas.map((c,i)=>{
-                    const ctr=contratos.find(x=>x.id===c.contratoId);
-                    return(
-                      <tr key={c.id} onClick={()=>setDetalhe(c)} style={{borderBottom:"1px solid #f1f5f9",cursor:"pointer",background:i%2===0?"#fff":"#fafafa"}}
-                        onMouseEnter={ev=>ev.currentTarget.style.background="#f0f9ff"}
-                        onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":"#fafafa"}>
-                        <td style={{padding:"11px 14px",color:"#64748b",fontFamily:"monospace",fontSize:11}}>{c.codigo}</td>
-                        <td style={{padding:"11px 14px",fontWeight:500}}>{c.material}</td>
-                        <td style={{padding:"11px 14px",color:"#64748b"}}>{c.unidade}</td>
-                        <td style={{padding:"11px 14px",fontSize:11,color:"#0369a1",fontWeight:500}}>{ctr?.numero||<span style={{color:"#94a3b8"}}>—</span>}</td>
-                        <td style={{padding:"11px 14px",fontWeight:600}}>R$ {brl(c.mediaSaneada)}</td>
-                        <td style={{padding:"11px 14px",color:"#0369a1",fontWeight:700}}>R$ {brl(c.precoFinalDesconto)}</td>
-                        <td style={{padding:"11px 14px",color:"#64748b",fontSize:12}}>{fmtVenc(c.dataElaboracao)}</td>
-                        <td style={{padding:"11px 14px"}}><StatusBadge status={c.status}/></td>
-                        {podeEditar&&<td style={{padding:"11px 14px"}}><button onClick={ev=>{ev.stopPropagation();abrirEditar(c);}} style={{background:"none",border:"1px solid #e2e8f0",borderRadius:6,padding:"4px 10px",fontSize:11,color:"#475569",cursor:"pointer"}}>Editar</button></td>}
-                      </tr>
-                    );
-                  })}
-                  {filtradas.length===0&&<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhuma cotação encontrada.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {Object.entries(cotacoesAgrupadas).map(([cid, lista]) => {
+              const ctr = contratos.find(x => x.id === cid);
+              
+              return (
+                  <div key={cid} style={{marginBottom: 32}}>
+                      <div style={{borderBottom: "2px solid #e2e8f0", paddingBottom: 8, marginBottom: 16, display: "flex", alignItems: "baseline", gap: 10}}>
+                          <h3 style={{margin: 0, fontSize: 16, color: "#0f172a"}}>
+                              {ctr ? `${ctr.numero} — ${ctr.contratadaRazaoSocial || 'Sem Nome'}` : 'Cotações Sem Contrato (Antigas)'}
+                          </h3>
+                          <span style={{fontSize: 12, color: "#64748b"}}>{lista.length} iten(s)</span>
+                      </div>
 
-          {view==="cards"&&(
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:14}}>
-              {filtradas.map(c=>{
-                const dias=diasRest(c.dataElaboracao);
-                const ctr=contratos.find(x=>x.id===c.contratoId);
-                return(
-                  <div key={c.id} onClick={()=>setDetalhe(c)} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:14,overflow:"hidden",cursor:"pointer"}}
-                    onMouseEnter={ev=>ev.currentTarget.style.boxShadow="0 4px 20px rgba(0,0,0,.08)"}
-                    onMouseLeave={ev=>ev.currentTarget.style.boxShadow="none"}>
-                    <div style={{height:100,background:c.imagem?`url(${c.imagem}) center/cover`:"#f1f5f9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>{c.imagem?null:"📦"}</div>
-                    <div style={{padding:"12px 14px"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                        <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace"}}>{c.codigo}</div>
-                        <StatusBadge status={c.status}/>
-                      </div>
-                      <div style={{fontWeight:600,fontSize:13,marginBottom:4,lineHeight:1.3}}>{c.material}</div>
-                      {ctr&&<div style={{fontSize:11,color:"#0369a1",marginBottom:6,fontWeight:500}}>{ctr.numero}</div>}
-                      <div style={{display:"flex",justifyContent:"space-between",marginTop:10,borderTop:"1px solid #f1f5f9",paddingTop:10}}>
-                        <div><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>MÉDIA SANEADA</div><div style={{fontSize:14,fontWeight:700}}>R$ {brl(c.mediaSaneada)}</div></div>
-                        <div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>VALOR FINAL</div><div style={{fontSize:14,fontWeight:700,color:"#0369a1"}}>R$ {brl(c.precoFinalDesconto)}</div></div>
-                      </div>
-                      {dias!==null&&<div style={{marginTop:6,fontSize:11,color:dias<0?"#dc2626":dias<=30?"#b45309":"#16a34a"}}>{dias<0?`Vencida há ${Math.abs(dias)} dias`:dias===0?"Vence hoje":`Vence em ${dias} dias`}</div>}
-                    </div>
+                      {view==="lista"&&(
+                        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,overflow:"hidden"}}>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                            <thead><tr style={{background:"#f8fafc",borderBottom:"1px solid #e2e8f0"}}>
+                              {["Código","Material","Categoria","Modo","Média saneada","Valor final","Vencimento","Status",...(podeEditar?[""]:[])] .map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:.4,whiteSpace:"nowrap"}}>{h}</th>)}
+                            </tr></thead>
+                            <tbody>
+                              {lista.map((c,i)=>(
+                                  <tr key={c.id} onClick={()=>setDetalhe(c)} style={{borderBottom:"1px solid #f1f5f9",cursor:"pointer",background:i%2===0?"#fff":"#fafafa"}}
+                                    onMouseEnter={ev=>ev.currentTarget.style.background="#f0f9ff"}
+                                    onMouseLeave={ev=>ev.currentTarget.style.background=i%2===0?"#fff":"#fafafa"}>
+                                    <td style={{padding:"11px 14px",color:"#64748b",fontFamily:"monospace",fontSize:11}}>{c.codigo}</td>
+                                    <td style={{padding:"11px 14px",fontWeight:500}}>{c.material}</td>
+                                    <td style={{padding:"11px 14px"}}><CatBadge cat={c.categoria}/></td>
+                                    <td style={{padding:"11px 14px", fontSize:11}}>{c.precoDireto ? <span style={{color:"#b45309"}}>Direto</span> : <span style={{color:"#0369a1"}}>Calculado</span>}</td>
+                                    <td style={{padding:"11px 14px",fontWeight:600}}>R$ {brl(c.mediaSaneada)}</td>
+                                    <td style={{padding:"11px 14px",color:"#0369a1",fontWeight:700}}>R$ {brl(c.precoFinalDesconto)}</td>
+                                    <td style={{padding:"11px 14px",color:"#64748b",fontSize:12}}>{fmtVenc(c.dataElaboracao)}</td>
+                                    <td style={{padding:"11px 14px"}}><StatusBadge status={c.status}/></td>
+                                    {podeEditar&&<td style={{padding:"11px 14px"}}><button onClick={ev=>{ev.stopPropagation();abrirEditar(c);}} style={{background:"none",border:"1px solid #e2e8f0",borderRadius:6,padding:"4px 10px",fontSize:11,color:"#475569",cursor:"pointer"}}>Editar</button></td>}
+                                  </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {view==="cards"&&(
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:14}}>
+                          {lista.map(c=>{
+                            const dias=diasRest(c.dataElaboracao);
+                            return(
+                              <div key={c.id} onClick={()=>setDetalhe(c)} style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:14,overflow:"hidden",cursor:"pointer", position: "relative"}}
+                                onMouseEnter={ev=>ev.currentTarget.style.boxShadow="0 4px 20px rgba(0,0,0,.08)"}
+                                onMouseLeave={ev=>ev.currentTarget.style.boxShadow="none"}>
+                                {c.precoDireto && <div style={{position:"absolute", top: 10, left: -25, background:"#b45309", color:"#fff", fontSize: 9, fontWeight:"bold", padding:"2px 30px", transform:"rotate(-45deg)"}}>MANUAL</div>}
+                                <div style={{height:100,background:c.imagem?`url(${c.imagem}) center/cover`:"#f1f5f9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>{c.imagem?null:"📦"}</div>
+                                <div style={{padding:"12px 14px"}}>
+                                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                                    <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace"}}>{c.codigo}</div>
+                                    <StatusBadge status={c.status}/>
+                                  </div>
+                                  <div style={{fontWeight:600,fontSize:13,marginBottom:4,lineHeight:1.3}}>{c.material}</div>
+                                  <CatBadge cat={c.categoria}/>
+                                  <div style={{display:"flex",justifyContent:"space-between",marginTop:10,borderTop:"1px solid #f1f5f9",paddingTop:10}}>
+                                    <div><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>MÉDIA SANEADA</div><div style={{fontSize:14,fontWeight:700}}>R$ {brl(c.mediaSaneada)}</div></div>
+                                    <div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>VALOR FINAL</div><div style={{fontSize:14,fontWeight:700,color:"#0369a1"}}>R$ {brl(c.precoFinalDesconto)}</div></div>
+                                  </div>
+                                  {dias!==null&&<div style={{marginTop:6,fontSize:11,color:dias<0?"#dc2626":dias<=30?"#b45309":"#16a34a"}}>{dias<0?`Vencida há ${Math.abs(dias)} dias`:dias===0?"Vence hoje":`Vence em ${dias} dias`}</div>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                   </div>
-                );
-              })}
-              {filtradas.length===0&&<div style={{gridColumn:"1/-1",padding:40,textAlign:"center",color:"#94a3b8"}}>Nenhuma cotação encontrada.</div>}
-            </div>
-          )}
+              );
+          })}
         </div>
       )}
 
@@ -1164,7 +1031,7 @@ export default function App() {
             <div onClick={ev=>ev.stopPropagation()} style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:620,maxHeight:"91vh",overflowY:"auto",padding:26}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
                 <div>
-                  <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace",marginBottom:4}}>{c.codigo} · {c.unidade}</div>
+                  <div style={{fontSize:11,color:"#94a3b8",fontFamily:"monospace",marginBottom:4}}>{c.codigo} · {c.categoria}</div>
                   <div style={{fontSize:17,fontWeight:700,lineHeight:1.2}}>{c.material}</div>
                   {ctr&&<div style={{fontSize:12,color:"#0369a1",marginTop:4,fontWeight:500}}>{ctr.numero} — {ctr.contratanteNome||ctr.contratadaRazaoSocial}</div>}
                   <div style={{fontSize:12,color:"#64748b",marginTop:2}}>Base: {c.dataBase}</div>
@@ -1172,17 +1039,45 @@ export default function App() {
                 <StatusBadge status={c.status} size="lg"/>
               </div>
               {c.imagem&&<img src={c.imagem} style={{width:"100%",height:150,objectFit:"cover",borderRadius:10,marginBottom:14}}/>}
+              
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-                {[
-                  {l:"Média geral",v:"R$ "+brl(c.mediaGeral)},
-                  {l:"Média saneada",v:"R$ "+brl(c.mediaSaneada)},
-                  {l:`Valor c/ BDI (${c.bdi}%)`,v:"R$ "+brl(c.precoFinalBDI)},
-                  {l:`Valor final (desc. ${c.desconto}%)`,v:"R$ "+brl(c.precoFinalDesconto),dest:true},
-                  {l:"Data elaboração",v:c.dataElaboracao?new Date(c.dataElaboracao+"T12:00:00").toLocaleDateString("pt-BR"):"—"},
-                  {l:"Vencimento",v:fmtVenc(c.dataElaboracao)},
-                  {l:"Quantidade",v:c.quantidade+" "+c.unidade},
-                  {l:"Total referência",v:"R$ "+brl(c.precoFinalDesconto*c.quantidade)}
-                ].map(it=>(
+                {[{l:c.precoDireto?"Valor Base (Ignorado)":"Média geral",v:"R$ "+brl(c.mediaGeral)},{l:"Média saneada",v:"R$ "+brl(c.mediaSaneada)},{l:`Valor c/ BDI (${c.bdi||0}%)`,v:"R$ "+brl(c.precoFinalBDI)},{l:c.precoDireto?"Valor final (Manual)":`Valor final (desc. ${c.desconto||0}%)`,v:"R$ "+brl(c.precoFinalDesconto),dest:true},{l:"Data elaboração",v:c.dataElaboracao?new Date(c.dataElaboracao+"T12:00:00").toLocaleDateString("pt-BR"):"—"},{l:"Vencimento",v:fmtVenc(c.dataElaboracao)},{l:"Quantidade",v:c.quantidade+" "+c.unidade},{l:"Total referência",v:"R$ "+brl(c.precoFinalDesconto*c.quantidade)}].map(it=>
                   <div key={it.l} style={{background:it.dest?"#eff6ff":"#f8fafc",borderRadius:10,padding:"10px 14px",border:it.dest?"1px solid #bfdbfe":"none"}}>
                     <div style={{fontSize:11,color:"#94a3b8",fontWeight:500,marginBottom:2}}>{it.l}</div>
-                    <div style={{fontSize:15,fontWeight:700,color:it.dest?"#1d4ed8
+                    <div style={{fontSize:15,fontWeight:700,color:it.dest?"#1d4ed8":"#0f172a"}}>{it.v}</div>
+                  </div>
+                )}
+              </div>
+              
+              {!c.precoDireto && (
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#64748b",marginBottom:8,letterSpacing:.4}}>PESQUISA DE PREÇOS — SANEAMENTO</div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead><tr style={{background:"#f8fafc"}}>{["Fonte","Valor","Variação","Status"].map(h=><th key={h} style={{padding:"7px 10px",textAlign:"left",fontSize:11,fontWeight:600,color:"#64748b",borderBottom:"1px solid #e2e8f0"}}>{h}</th>)}</tr></thead>
+                      <tbody>{(c.fornecedores||[]).filter(f=>parseFloat(f.valor)>0).map((f,i)=>
+                        <tr key={i} style={{background:f.autoExcluido?"#fef2f2":"#f0fdf4",borderBottom:"1px solid #f1f5f9"}}>
+                          <td style={{padding:"7px 10px",fontWeight:500}}>{f.nome||"—"}</td>
+                          <td style={{padding:"7px 10px",fontFamily:"monospace"}}>R$ {brl(f.valor)}</td>
+                          <td style={{padding:"7px 10px",color:f.autoExcluido?"#dc2626":"#16a34a",fontWeight:600}}>{f.variacao!=null?pct(f.variacao):"—"}</td>
+                          <td style={{padding:"7px 10px"}}>{f.autoExcluido?<span style={{background:"#fee2e2",color:"#dc2626",borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:600}}>EXCLUÍDO</span>:<span style={{background:"#dcfce7",color:"#16a34a",borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:600}}>ACEITO</span>}</td>
+                        </tr>
+                      )}</tbody>
+                    </table>
+                  </div>
+              )}
+              {c.observacoes&&<div style={{background:"#f8fafc",borderRadius:8,padding:"10px 14px",fontSize:13,color:"#475569",marginBottom:14}}><span style={{fontWeight:600}}>Obs.: </span>{c.observacoes}</div>}
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                {usuario?.papel==="admin"&&<button onClick={()=>excluirCot(c.id)} style={{border:"1px solid #fca5a5",background:"#fff",color:"#dc2626",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Excluir</button>}
+                {podeEditar&&<button onClick={()=>abrirEditar(c)} style={{border:"1px solid #e2e8f0",background:"#fff",color:"#0f172a",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"}}>Editar</button>}
+                <button onClick={()=>setDetalhe(null)} style={{background:"#0f172a",color:"#fff",border:"none",borderRadius:8,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Fechar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {modalForm&&<FormModalCotacao editId={editId} initialForm={formInicial} contratos={contratosAcessiveis} onSave={salvar} onClose={()=>setModalForm(false)}/>}
+      {toast&&<div style={{position:"fixed",bottom:20,right:20,zIndex:300,background:toast.tipo==="erro"?"#fef2f2":"#f0fdf4",border:`1px solid ${toast.tipo==="erro"?"#fca5a5":"#86efac"}`,color:toast.tipo==="erro"?"#dc2626":"#16a34a",borderRadius:10,padding:"12px 18px",fontSize:13,fontWeight:500,boxShadow:"0 4px 16px rgba(0,0,0,.1)"}}>{toast.msg}</div>}
+    </div>
+  );
+}
