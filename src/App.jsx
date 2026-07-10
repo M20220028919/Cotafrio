@@ -27,6 +27,7 @@ async function criarUsuarioFirebase(email, senha) {
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────
+const CATEGORIAS = ["Fixação","Lubrificação","Tubulação","Elétrico","Refrigeração","Gás","Outro"];
 const STATUS_CONTRATO = {
   ativo:     { label:"Ativo",     color:"#16a34a", bg:"#dcfce7", border:"#86efac" },
   encerrado: { label:"Encerrado", color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
@@ -47,13 +48,11 @@ const OPCOES_UNIDADE = ["UNID", "KG", "M", "L", "M²", "M³", "CX", "PC", "KIT"]
 // ── Cálculos ──────────────────────────────────────────────────────────────
 // Arredondamento comercial Excel (ARREDONDAR): meio sobe
 function arred(n, dec = 2) {
+  const num = parseFloat(n) || 0; 
   const f = Math.pow(10, dec);
-  return Math.round((n + Number.EPSILON) * f) / f;
+  return Math.round((num + Number.EPSILON) * f) / f;
 }
 
-// Todos os fornecedores são aceitos — sem exclusão por variação
-// Variação calculada em relação à média aritmética (apenas informativa)
-// Base de cálculo do preço = menor valor encontrado
 function calcFornecedores(fornecedores) {
   const validos = (fornecedores || []).map(f => parseFloat(f.valor)).filter(v => !isNaN(v) && v > 0);
   if (!validos.length) return {
@@ -99,22 +98,29 @@ const brl = n => Number(arred(n || 0)).toLocaleString("pt-BR", { minimumFraction
 const pct = n => (n >= 0 ? "+" : "") + ((n || 0) * 100).toFixed(2) + "%";
 const fmtData = dt => dt ? new Date(dt + "T12:00:00").toLocaleDateString("pt-BR") : "—";
 
-const emptyFormCotacao = { material: "", codigo: "", unidade: "UNID", contratoId: "", dataBase: "", dataElaboracao: "", quantidade: 1, observacoes: "", imagem: null, precoDireto: false, valorFinalDireto: "", fornecedores: [{ nome: "", url: "", valor: "" }] };
+const emptyFormCotacao = { 
+  material: "", codigo: "", categoria: "Refrigeração", unidade: "UNID", contratoId: "", dataBase: "", dataElaboracao: "", 
+  quantidade: 1, observacoes: "", imagem: null, 
+  precoDireto: false, valorFinalDireto: "", docDiretoNome: "", docDiretoData: null,
+  fornecedores: [{ fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome: "", documentoData: null, documentoRef: null }] 
+};
 
 const emptyFormContrato = {
   numero: "", processoSEI: "", objeto: "", statusContrato: "ativo",
   contratanteNome: "", contratanteCNPJ: "", contratanteRepresentante: "", contratanteCargo: "",
   contratadaRazaoSocial: "", contratadaCNPJ: "", contratadaEndereco: "", contratadaTelefone: "", contratadaEmail: "", contratadaRepresentante: "",
-  dataInicio: "", dataTermino: "", prorrogavel: "sim", limiteProrrogacao: "",
-  valorMensal: "", valorTotal: "",
-  bdi: "", desconto: "",
-  fiscal: "", observacoes: ""
+  dataInicio: "", dataTermino: "", prazoMeses: "", prorrogavel: "sim", limiteProrrogacao: "",
+  valorMensal: "", valorTotal: "", regimeExecucao: "", indiceReajuste: "IPCA",
+  bdi: "", desconto: "", fiscal: "", observacoes: ""
 };
 
 // ── Badges ────────────────────────────────────────────────────────────────
 function StatusBadge({ status, size }) {
   const s = SV[status] || SV.vencida;
   return <span style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}`, borderRadius: 20, padding: size === "lg" ? "4px 14px" : "2px 10px", fontSize: size === "lg" ? 13 : 11, fontWeight: 600, display: "inline-block", whiteSpace: "nowrap" }}>{s.label}</span>;
+}
+function CatBadge({cat}) {
+  return <span style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:500}}>{cat}</span>;
 }
 function RoleBadge({ papel }) {
   const s = PAPEIS[papel] || PAPEIS.consultor;
@@ -150,10 +156,10 @@ function PainelPrecos({ fornecedores }) {
         <tbody>{forn.filter(f => parseFloat(f.valor) > 0).map((f, i) => (
           <tr key={i} style={{ background: parseFloat(f.valor) === menorValor ? "#f0fdf4" : "#fff", borderBottom: "1px solid #f1f5f9" }}>
             <td style={{ padding: "7px 10px", fontWeight: 500 }}>
-              {f.nome || "—"}
+              <span style={{color:"#0369a1", fontWeight:600}}>{f.fonte}</span> {f.nome ? `— ${f.nome}` : ""}
               {parseFloat(f.valor) === menorValor && <span style={{ marginLeft: 6, background: "#dcfce7", color: "#16a34a", borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>BASE</span>}
             </td>
-            <td style={{ padding: "7px 10px", fontFamily: "monospace" }}>R$ {brl(f.valor)}</td>
+            <td style={{ padding: "7px 10px", fontFamily: "monospace", fontWeight:600 }}>R$ {brl(f.valor)}</td>
             <td style={{ padding: "7px 10px", color: Math.abs(f.variacao || 0) > 0.15 ? "#b45309" : "#475569", fontWeight: 600 }}>{f.variacao != null ? pct(f.variacao) : "—"}</td>
           </tr>
         ))}</tbody>
@@ -175,7 +181,22 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
 
   function updForn(i, k, v) { setForm(f => ({ ...f, fornecedores: f.fornecedores.map((fo, idx) => idx === i ? { ...fo, [k]: v } : fo) })); }
   function handleImg(ev) { const file = ev.target.files[0]; if (!file) return; const r = new FileReader(); r.onload = x => setForm(f => ({ ...f, imagem: x.target.result })); r.readAsDataURL(file); }
-  const lbl = (txt, req) => <label style={{ fontSize: 12, fontWeight: 500, color: "#64748b", display: "block", marginBottom: 3 }}>{txt}{req && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}</label>;
+  
+  function handleDocForn(i, ev) {
+    const file = ev.target.files[0]; 
+    if (!file) return; 
+    const r = new FileReader(); 
+    r.onload = x => {
+      setForm(f => {
+        const newForn = [...f.fornecedores];
+        newForn[i] = { ...newForn[i], documentoData: x.target.result, documentoNome: file.name, documentoRef: null };
+        return { ...f, fornecedores: newForn };
+      });
+    }; 
+    r.readAsDataURL(file); 
+  }
+
+  const lbl = (txt, req) => <label style={{ fontSize: 12, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 4 }}>{txt}{req && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}</label>;
 
   function handleContractChange(ev) {
     const cid = ev.target.value;
@@ -197,10 +218,13 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 700, maxHeight: "94vh", overflowY: "auto", padding: 26 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>{editId ? "Editar cotação" : "Nova cotação"}</div>
+      <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 760, maxHeight: "94vh", overflowY: "auto", padding: 26 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>{editId ? "Editar cotação" : "Nova cotação"}</div>
 
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: .6, marginBottom: 10 }}>IDENTIFICAÇÃO</div>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, marginBottom: 16, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 4, height: 14, background: "#0ea5e9", borderRadius: 2 }}></div>IDENTIFICAÇÃO
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
           <div style={{ gridColumn: "1/-1" }}>
             {lbl("Contrato vinculado", true)}
@@ -215,6 +239,7 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
 
           <div style={{ gridColumn: "1/-1" }}>{lbl("Material / Descrição", true)}<input value={form.material} onChange={ev => setForm(p => ({ ...p, material: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
           <div>{lbl("Código")}<input value={form.codigo || ""} onChange={ev => setForm(p => ({ ...p, codigo: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
+          <div>{lbl("Categoria")}<select value={form.categoria} onChange={ev=>setForm(p=>({...p,categoria:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}</select></div>
           <div>{lbl("Unidade")}
             <select value={form.unidade || "UNID"} onChange={ev => setForm(p => ({ ...p, unidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
               {OPCOES_UNIDADE.map(u => <option key={u}>{u}</option>)}
@@ -225,41 +250,109 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
           <div>{lbl("Quantidade")}<input type="number" value={form.quantidade || ""} onChange={ev => setForm(p => ({ ...p, quantidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
         </div>
 
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: .6, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>INSERÇÃO DE PREÇOS</span>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: "#0f172a", fontWeight: 400 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, marginTop: 24, marginBottom: 16, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+             <div style={{ width: 4, height: 14, background: "#0ea5e9", borderRadius: 2 }}></div>INSERÇÃO DE PREÇOS
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: "#0f172a", fontWeight: 400, background:"#f1f5f9", padding:"4px 10px", borderRadius:6, letterSpacing: 0, textTransform: "none" }}>
             <input type="checkbox" checked={form.precoDireto} onChange={ev => setForm(p => ({ ...p, precoDireto: ev.target.checked }))} />
             Inserir preço final diretamente (já c/ BDI)
           </label>
         </div>
 
         {form.precoDireto ? (
-          <div style={{ background: "#f8fafc", borderRadius: 10, padding: "14px", marginBottom: 20 }}>
-            {lbl("Valor final (R$) — já com BDI e desconto aplicados")}
-            <input type="number" step="0.01" min="0" placeholder="0,00" value={form.valorFinalDireto}
-              onChange={ev => setForm(p => ({ ...p, valorFinalDireto: parseFloat(ev.target.value) || 0 }))}
-              style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "9px 12px", fontSize: 14, width: 220, marginTop: 4 }} />
-            <div style={{ fontSize: 11, color: "#64748b", marginTop: 8 }}>Este valor será usado diretamente como preço final da cotação.</div>
+          <div style={{ background: "#f8fafc", borderRadius: 10, padding: "18px", marginBottom: 20, border:"1px solid #e2e8f0" }}>
+            <div style={{display:"grid", gap:14}}>
+                <div>
+                    {lbl("Valor final (R$) — já com BDI e desconto aplicados")}
+                    <input type="number" step="0.01" min="0" placeholder="0,00" value={form.valorFinalDireto}
+                    onChange={ev => setForm(p => ({ ...p, valorFinalDireto: parseFloat(ev.target.value) || 0 }))}
+                    style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "9px 12px", fontSize: 14, width: 220 }} />
+                    <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>Este valor será usado diretamente como preço final da cotação.</div>
+                </div>
+                <div style={{borderTop:"1px dashed #cbd5e1", paddingTop:14}}>
+                    {lbl("Documento Comprobatório (Foto ou PDF)")}
+                    <input type="file" accept=".pdf,image/*" onChange={ev => {
+                        const file = ev.target.files[0];
+                        if(!file) return;
+                        const r = new FileReader();
+                        r.onload = x => setForm(f => ({ ...f, docDiretoData: x.target.result, docDiretoNome: file.name }));
+                        r.readAsDataURL(file);
+                    }} style={{fontSize: 12, marginTop:4}} />
+                    {form.docDiretoNome && <div style={{fontSize:12, color:"#16a34a", marginTop:6, fontWeight:600}}>✓ Arquivo anexado: {form.docDiretoNome}</div>}
+                </div>
+            </div>
           </div>
         ) : (
           <>
             <div style={{ background: "#f8fafc", borderRadius: 10, padding: "14px", marginBottom: 4 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 110px 28px", gap: 6, marginBottom: 6 }}>
-                {["Fornecedor / Fonte", "URL (opcional)", "Valor (R$)", ""].map(h => <div key={h} style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, padding: "0 2px" }}>{h}</div>)}
-              </div>
-              {(form.fornecedores || []).map((f, i) => (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 110px 28px", gap: 6, marginBottom: 6, alignItems: "center" }}>
-                  <input placeholder="Ex: Jofepar, SINAPI 39751" value={f.nome} onChange={ev => updForn(i, "nome", ev.target.value)} style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "7px 10px", fontSize: 12 }} />
-                  <input placeholder="https://..." value={f.url || ""} onChange={ev => updForn(i, "url", ev.target.value)} style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "7px 10px", fontSize: 12 }} />
-                  <input type="number" step="0.01" min="0" placeholder="0,00" value={f.valor} onChange={ev => updForn(i, "valor", ev.target.value)} style={{ border: "1px solid #e2e8f0", borderRadius: 7, padding: "7px 10px", fontSize: 12 }} />
-                  <button onClick={() => setForm(f => ({ ...f, fornecedores: f.fornecedores.filter((_, idx) => idx !== i) }))} style={{ background: "none", border: "none", color: "#dc2626", fontSize: 20, lineHeight: 1, cursor: "pointer" }}>×</button>
+              {form.fornecedores.map((f, i) => (
+                <div key={i} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 16, marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>Fonte de Preço {i + 1}</div>
+                    {form.fornecedores.length > 1 && (
+                      <button onClick={() => setForm(prev => ({ ...prev, fornecedores: prev.fornecedores.filter((_, idx) => idx !== i) }))} style={{ background: "none", border: "none", color: "#dc2626", fontSize: 11, fontWeight: 600, cursor: "pointer", padding:0 }}>Remover fonte</button>
+                    )}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      {lbl("Tipo de Fonte")}
+                      <select value={f.fonte} onChange={ev => updForn(i, "fonte", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12, background:"#fff" }}>
+                        <option value="Compras públicas">Compras públicas</option>
+                        <option value="SINAPI">SINAPI</option>
+                        <option value="ORSE">ORSE</option>
+                        <option value="Internet">Internet</option>
+                        <option value="Cotação de Mercado">Cotação de Mercado</option>
+                        <option value="Outros">Outros</option>
+                      </select>
+                    </div>
+                    <div>{lbl("Fornecedor / Nome")}<input placeholder="Ex: Jofepar" value={f.nome} onChange={ev => updForn(i, "nome", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12 }} /></div>
+                    <div>{lbl("CPF / CNPJ")}<input placeholder="00.000.000/0000-00" value={f.cpfCnpj} onChange={ev => updForn(i, "cpfCnpj", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12 }} /></div>
+                    <div>{lbl("Contato")}<input placeholder="Telefone, E-mail ou Vendedor" value={f.contato} onChange={ev => updForn(i, "contato", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12 }} /></div>
+                    <div>{lbl("URL (opcional)")}<input placeholder="https://..." value={f.url} onChange={ev => updForn(i, "url", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12 }} /></div>
+                    <div>{lbl("Valor Unitário (R$)")}<input type="number" step="0.01" min="0" placeholder="0,00" value={f.valor} onChange={ev => updForn(i, "valor", ev.target.value)} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12, fontWeight:600, color:"#0369a1" }} /></div>
+                    
+                    <div style={{ gridColumn: "1/-1", borderTop: "1px dashed #e2e8f0", paddingTop: 14, marginTop: 4 }}>
+                      {lbl("Documento Comprobatório (Foto ou PDF)")}
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexDirection:"column" }}>
+                        <select
+                          value={f.documentoRef !== null ? f.documentoRef : "novo"}
+                          onChange={ev => {
+                            const val = ev.target.value;
+                            if (val === "novo") { updForn(i, "documentoRef", null); }
+                            else { updForn(i, "documentoRef", parseInt(val)); updForn(i, "documentoData", null); updForn(i, "documentoNome", ""); }
+                          }}
+                          style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12, width: "100%", background:"#fff" }}>
+                          <option value="novo">Anexar novo arquivo para esta fonte...</option>
+                          {form.fornecedores.map((out, idx) => {
+                            if (idx !== i && out.documentoRef === null && out.documentoData) {
+                              return <option key={idx} value={idx}>Usar arquivo já anexado na Fonte {idx + 1} ({out.documentoNome})</option>;
+                            }
+                            return null;
+                          })}
+                        </select>
+                        {f.documentoRef === null ? (
+                          <div style={{ marginTop: 4 }}>
+                            <input type="file" accept=".pdf,image/*" onChange={e => handleDocForn(i, e)} style={{ fontSize: 11 }} />
+                            {f.documentoNome && <div style={{ fontSize: 12, color: "#16a34a", marginTop: 6, fontWeight: 600 }}>✓ Anexado: {f.documentoNome}</div>}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: "#0369a1", marginTop: 4, fontWeight: 600 }}>✓ Vinculado ao documento da Fonte {f.documentoRef + 1}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               ))}
-              <button onClick={() => setForm(f => ({ ...f, fornecedores: [...(f.fornecedores || []), { nome: "", url: "", valor: "" }] }))} style={{ marginTop: 4, fontSize: 12, border: "1px dashed #cbd5e1", borderRadius: 7, padding: "6px 14px", background: "#fff", color: "#64748b", width: "100%", cursor: "pointer" }}>+ Adicionar fonte</button>
+              <button onClick={() => setForm(f => ({ ...f, fornecedores: [...(f.fornecedores || []), { fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome:"", documentoData:null, documentoRef:null }] }))} style={{ marginTop: 4, fontSize: 12, border: "1px dashed #cbd5e1", borderRadius: 8, padding: "10px 14px", background: "#fff", color: "#64748b", width: "100%", cursor: "pointer", fontWeight:600 }}>+ Adicionar outra fonte</button>
             </div>
+            
             <PainelPrecos fornecedores={form.fornecedores || []} />
 
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: .6, margin: "20px 0 10px" }}>PARÂMETROS DE CÁLCULO (do contrato)</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, marginTop: 24, marginBottom: 16, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 4, height: 14, background: "#0ea5e9", borderRadius: 2 }}></div>PARÂMETROS DE CÁLCULO (DO CONTRATO)
+            </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
               <div style={{ background: "#f1f5f9", padding: "8px 12px", borderRadius: 8, fontSize: 13, color: "#64748b" }}>BDI: <strong>{form.bdi || 0}%</strong></div>
               <div style={{ background: "#f1f5f9", padding: "8px 12px", borderRadius: 8, fontSize: 13, color: "#64748b" }}>Desconto: <strong>{form.desconto || 0}%</strong></div>
@@ -272,13 +365,16 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
           </>
         )}
 
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: .6, marginBottom: 10 }}>EXTRAS</div>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, marginTop: 24, marginBottom: 16, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 4, height: 14, background: "#0ea5e9", borderRadius: 2 }}></div>EXTRAS
+        </div>
+
         <div style={{ display: "grid", gap: 12, marginBottom: 20 }}>
           <div>{lbl("Observações")}<textarea value={form.observacoes || ""} onChange={ev => setForm(p => ({ ...p, observacoes: ev.target.value }))} rows={2} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} /></div>
           <div>{lbl("Imagem do material")}<input type="file" accept="image/*" onChange={handleImg} style={{ fontSize: 13 }} />{form.imagem && <img src={form.imagem} style={{ marginTop: 8, height: 72, borderRadius: 8, objectFit: "cover" }} />}</div>
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
-          <button onClick={onClose} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={onClose} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer", fontWeight:600 }}>Cancelar</button>
           <button onClick={handleSave} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 22px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{editId ? "Salvar alterações" : "Cadastrar cotação"}</button>
         </div>
       </div>
@@ -297,7 +393,12 @@ function FormModalContrato({ editId, initialForm, onSave, onClose }) {
         style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, boxSizing: "border-box" }} />
     </div>
   );
-  const sec = txt => <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: .6, margin: "20px 0 10px", gridColumn: "1/-1" }}>{txt}</div>;
+  
+  const sec = (txt, isFirst = false) => (
+    <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, margin: `${isFirst ? 0 : 24}px 0 8px`, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ width: 4, height: 14, background: "#0ea5e9", borderRadius: 2 }}></div>{txt}
+    </div>
+  );
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
@@ -306,7 +407,7 @@ function FormModalContrato({ editId, initialForm, onSave, onClose }) {
         <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Campos com * são obrigatórios.</div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {sec("IDENTIFICAÇÃO")}
+          {sec("IDENTIFICAÇÃO", true)}
           {inp("Número do contrato *", "numero")}
           {inp("Nº do Processo SEI", "processoSEI")}
           <div style={{ gridColumn: "1/-1" }}>{lbl("Objeto (descrição do serviço) *")}<textarea value={form.objeto || ""} onChange={ev => setForm(p => ({ ...p, objeto: ev.target.value }))} rows={2} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} /></div>
@@ -331,6 +432,7 @@ function FormModalContrato({ editId, initialForm, onSave, onClose }) {
           {sec("VIGÊNCIA")}
           {inp("Data de início *", "dataInicio", "date")}
           {inp("Data de término *", "dataTermino", "date")}
+          {inp("Prazo (meses)", "prazoMeses", "number")}
           <div>{lbl("Prorrogável")}<select value={form.prorrogavel || "sim"} onChange={ev => setForm(p => ({ ...p, prorrogavel: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
             <option value="sim">Sim</option><option value="nao">Não</option>
           </select></div>
@@ -440,7 +542,7 @@ function PainelContratos({ showToast }) {
             {[
               { titulo: "CONTRATANTE", campos: [{ l: "Nome", v: detalhe.contratanteNome }, { l: "CNPJ", v: detalhe.contratanteCNPJ }, { l: "Representante", v: detalhe.contratanteRepresentante }, { l: "Cargo", v: detalhe.contratanteCargo }] },
               { titulo: "CONTRATADA", campos: [{ l: "Razão social", v: detalhe.contratadaRazaoSocial }, { l: "CNPJ", v: detalhe.contratadaCNPJ }, { l: "Endereço", v: detalhe.contratadaEndereco }, { l: "Telefone", v: detalhe.contratadaTelefone }, { l: "E-mail", v: detalhe.contratadaEmail }, { l: "Representante", v: detalhe.contratadaRepresentante }] },
-              { titulo: "VIGÊNCIA", campos: [{ l: "Início", v: fmtData(detalhe.dataInicio) }, { l: "Término", v: fmtData(detalhe.dataTermino) }, { l: "Prorrogável", v: detalhe.prorrogavel === "sim" ? "Sim" : "Não" }, { l: "Limite prorrog.", v: detalhe.limiteProrrogacao ? detalhe.limiteProrrogacao + " meses" : "—" }] },
+              { titulo: "VIGÊNCIA", campos: [{ l: "Início", v: fmtData(detalhe.dataInicio) }, { l: "Término", v: fmtData(detalhe.dataTermino) }, { l: "Prazo", v: detalhe.prazoMeses ? (detalhe.prazoMeses + " meses") : "—" }, { l: "Prorrogável", v: detalhe.prorrogavel === "sim" ? "Sim" : "Não" }, { l: "Limite prorrog.", v: detalhe.limiteProrrogacao ? detalhe.limiteProrrogacao + " meses" : "—" }] },
               { titulo: "VALORES E PARÂMETROS", campos: [{ l: "Valor mensal", v: "R$ " + brl(detalhe.valorMensal) }, { l: "Valor total", v: "R$ " + brl(detalhe.valorTotal) }, { l: "BDI (%)", v: (detalhe.bdi || 0) + "%" }, { l: "Desconto (%)", v: (detalhe.desconto || 0) + "%" }] },
               { titulo: "GESTÃO", campos: [{ l: "Fiscal", v: detalhe.fiscal || "—" }, { l: "Observações", v: detalhe.observacoes || "—" }] },
             ].map(sec => (
@@ -531,7 +633,6 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
     if (!contratoSelecionado) return;
     const p = parseFloat(reajustePct);
     if (isNaN(p) || !contratoSelecionado.materiais?.length) return;
-    // Arredondamento Excel aplicado ao reajuste
     const novosMateriais = contratoSelecionado.materiais.map(m => ({
       ...m, valor: arred(m.valor * (1 + p / 100))
     }));
@@ -821,7 +922,7 @@ function TelaLogin() {
       <div style={{ background: "#fff", borderRadius: 18, border: "1px solid #e2e8f0", padding: "36px 40px", width: "100%", maxWidth: 380, boxShadow: "0 8px 32px rgba(0,0,0,.07)" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28 }}>
           <div style={{ width: 48, height: 48, background: "#0f172a", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, color: "#38bdf8", marginBottom: 12 }}>❄</div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", letterSpacing: -.4 }}>CotaFrio</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", letterSpacing: -.4 }}>CotaFacil SMP</div>
           <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Sistema de Cotações</div>
         </div>
         <div style={{ marginBottom: 14 }}>
@@ -964,7 +1065,6 @@ export default function App() {
     <div style={{ minHeight: "100vh", background: "#f8fafc", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, fontFamily: "'DM Sans','Segoe UI',sans-serif", color: "#64748b" }}>
       <div style={{ width: 48, height: 48, background: "#0f172a", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, color: "#38bdf8" }}>❄</div>
       <div style={{ fontSize: 14, fontWeight: 500 }}>Verificando sessão...</div>
-      <div style={{ fontSize: 12, color: "#94a3b8" }}>Se esta tela não avançar, <button onClick={() => window.location.reload()} style={{ background: "none", border: "none", color: "#0369a1", cursor: "pointer", fontSize: 12, textDecoration: "underline", padding: 0 }}>clique aqui para recarregar</button>.</div>
     </div>
   );
   if (!authUser) return <TelaLogin />;
@@ -987,7 +1087,7 @@ export default function App() {
       <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 24px", display: "flex", alignItems: "center", height: 58, gap: 14, position: "sticky", top: 0, zIndex: 100 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 34, height: 34, background: "#0f172a", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#38bdf8" }}>❄</div>
-          <div><div style={{ fontSize: 14, fontWeight: 700, letterSpacing: -.3 }}>CotaFrio</div><div style={{ fontSize: 10, color: "#94a3b8", letterSpacing: .5 }}>SISTEMA DE COTAÇÕES</div></div>
+          <div><div style={{ fontSize: 14, fontWeight: 700, letterSpacing: -.3 }}>CotaFacil SMP</div><div style={{ fontSize: 10, color: "#94a3b8", letterSpacing: .5 }}>SISTEMA DE COTAÇÕES</div></div>
         </div>
         <div style={{ display: "flex", gap: 2, marginLeft: 8 }}>
           {abas.map(([v, l]) => (
@@ -1169,7 +1269,7 @@ export default function App() {
                     <tbody>{(c.fornecedores || []).filter(f => parseFloat(f.valor) > 0).map((f, i) =>
                       <tr key={i} style={{ background: parseFloat(f.valor) === c.menorValor ? "#f0fdf4" : "#fff", borderBottom: "1px solid #f1f5f9" }}>
                         <td style={{ padding: "7px 10px", fontWeight: 500 }}>
-                          {f.nome || "—"}
+                          <span style={{color:"#0369a1", fontWeight:600}}>{f.fonte}</span> {f.nome ? `— ${f.nome}` : ""}
                           {parseFloat(f.valor) === c.menorValor && <span style={{ marginLeft: 6, background: "#dcfce7", color: "#16a34a", borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>BASE</span>}
                         </td>
                         <td style={{ padding: "7px 10px", fontFamily: "monospace" }}>R$ {brl(f.valor)}</td>
