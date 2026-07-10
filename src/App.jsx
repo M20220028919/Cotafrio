@@ -27,7 +27,6 @@ async function criarUsuarioFirebase(email, senha) {
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────
-const CATEGORIAS = ["Fixação","Lubrificação","Tubulação","Elétrico","Refrigeração","Gás","Outro"];
 const STATUS_CONTRATO = {
   ativo:     { label:"Ativo",     color:"#16a34a", bg:"#dcfce7", border:"#86efac" },
   encerrado: { label:"Encerrado", color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
@@ -46,7 +45,6 @@ const PAPEIS = {
 const OPCOES_UNIDADE = ["UNID", "KG", "M", "L", "M²", "M³", "CX", "PC", "KIT"];
 
 // ── Cálculos ──────────────────────────────────────────────────────────────
-// Arredondamento comercial Excel (ARREDONDAR): meio sobe
 function arred(n, dec = 2) {
   const num = parseFloat(n) || 0; 
   const f = Math.pow(10, dec);
@@ -99,7 +97,7 @@ const pct = n => (n >= 0 ? "+" : "") + ((n || 0) * 100).toFixed(2) + "%";
 const fmtData = dt => dt ? new Date(dt + "T12:00:00").toLocaleDateString("pt-BR") : "—";
 
 const emptyFormCotacao = { 
-  material: "", codigo: "", categoria: "Refrigeração", unidade: "UNID", contratoId: "", dataBase: "", dataElaboracao: "", 
+  material: "", codigo: "", unidade: "UNID", contratoId: "", dataElaboracao: "", 
   quantidade: 1, observacoes: "", imagem: null, 
   precoDireto: false, valorFinalDireto: "", docDiretoNome: "", docDiretoData: null,
   fornecedores: [{ fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome: "", documentoData: null, documentoRef: null }] 
@@ -118,9 +116,6 @@ const emptyFormContrato = {
 function StatusBadge({ status, size }) {
   const s = SV[status] || SV.vencida;
   return <span style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}`, borderRadius: 20, padding: size === "lg" ? "4px 14px" : "2px 10px", fontSize: size === "lg" ? 13 : 11, fontWeight: 600, display: "inline-block", whiteSpace: "nowrap" }}>{s.label}</span>;
-}
-function CatBadge({cat}) {
-  return <span style={{background:"#f1f5f9",color:"#475569",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:500}}>{cat}</span>;
 }
 function RoleBadge({ papel }) {
   const s = PAPEIS[papel] || PAPEIS.consultor;
@@ -169,7 +164,7 @@ function PainelPrecos({ fornecedores }) {
 }
 
 // ── Modal de cotação ──────────────────────────────────────────────────────
-function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
+function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, onClose }) {
   const [form, setForm] = useState(initialForm);
   const [erroContrato, setErroContrato] = useState(false);
 
@@ -201,7 +196,18 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
   function handleContractChange(ev) {
     const cid = ev.target.value;
     const contrato = contratos.find(c => c.id === cid);
-    setForm(p => ({ ...p, contratoId: cid, bdi: contrato?.bdi || 0, desconto: contrato?.desconto || 0 }));
+    
+    // Geração do código automático (Apenas para novas cotações)
+    let novoCodigo = form.codigo;
+    if (!editId && cid) {
+      const numCotsNoContrato = cotacoes.filter(c => c.contratoId === cid).length;
+      const seqStr = String(numCotsNoContrato + 1).padStart(3, '0');
+      novoCodigo = `${contrato?.numero || "SN"}-${seqStr}`;
+    } else if (!editId && !cid) {
+      novoCodigo = "";
+    }
+
+    setForm(p => ({ ...p, contratoId: cid, bdi: contrato?.bdi || 0, desconto: contrato?.desconto || 0, codigo: novoCodigo }));
     setErroContrato(false);
   }
 
@@ -238,14 +244,14 @@ function FormModalCotacao({ editId, initialForm, contratos, onSave, onClose }) {
           </div>
 
           <div style={{ gridColumn: "1/-1" }}>{lbl("Material / Descrição", true)}<input value={form.material} onChange={ev => setForm(p => ({ ...p, material: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
-          <div>{lbl("Código")}<input value={form.codigo || ""} onChange={ev => setForm(p => ({ ...p, codigo: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
-          <div>{lbl("Categoria")}<select value={form.categoria} onChange={ev=>setForm(p=>({...p,categoria:ev.target.value}))} style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px",fontSize:13}}>{CATEGORIAS.map(c=><option key={c}>{c}</option>)}</select></div>
+          
+          <div>{lbl("Código (Automático)")}<input value={form.codigo || ""} readOnly placeholder="Selecione um contrato..." style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#f1f5f9", color: "#64748b" }} /></div>
+          
           <div>{lbl("Unidade")}
             <select value={form.unidade || "UNID"} onChange={ev => setForm(p => ({ ...p, unidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
               {OPCOES_UNIDADE.map(u => <option key={u}>{u}</option>)}
             </select>
           </div>
-          <div>{lbl("Data base")}<input value={form.dataBase || ""} onChange={ev => setForm(p => ({ ...p, dataBase: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
           <div>{lbl("Data de elaboração", true)}<input type="date" value={form.dataElaboracao || ""} onChange={ev => setForm(p => ({ ...p, dataElaboracao: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
           <div>{lbl("Quantidade")}<input type="number" value={form.quantidade || ""} onChange={ev => setForm(p => ({ ...p, quantidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13 }} /></div>
         </div>
@@ -949,7 +955,7 @@ export default function App() {
   const [contratos, setContratos] = useState([]);
   const [aba, setAba] = useState("cotacoes");
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("lista");
+  const [view, setView] = useState("cards"); // VISUALIZAÇÃO PADRÃO ALTERADA PARA CARDS
   const [filtroStatus, setFiltroStatus] = useState("todos");
   const [filtroContrato, setFiltroContrato] = useState("todos");
   const [busca, setBusca] = useState("");
@@ -1231,7 +1237,6 @@ export default function App() {
                   <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: "monospace", marginBottom: 4 }}>{c.codigo}</div>
                   <div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.2 }}>{c.material}</div>
                   {ctr && <div style={{ fontSize: 12, color: "#0369a1", marginTop: 4, fontWeight: 500 }}>{ctr.numero} — {ctr.contratanteNome || ctr.contratadaRazaoSocial}</div>}
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Base: {c.dataBase}</div>
                 </div>
                 <StatusBadge status={c.status} size="lg" />
               </div>
@@ -1290,7 +1295,7 @@ export default function App() {
         );
       })()}
 
-      {modalForm && <FormModalCotacao editId={editId} initialForm={formInicial} contratos={contratosAcessiveis} onSave={salvar} onClose={() => setModalForm(false)} />}
+      {modalForm && <FormModalCotacao editId={editId} initialForm={formInicial} contratos={contratosAcessiveis} cotacoes={cotacoes} onSave={salvar} onClose={() => setModalForm(false)} />}
       {toast && <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 300, background: toast.tipo === "erro" ? "#fef2f2" : "#f0fdf4", border: `1px solid ${toast.tipo === "erro" ? "#fca5a5" : "#86efac"}`, color: toast.tipo === "erro" ? "#dc2626" : "#16a34a", borderRadius: 10, padding: "12px 18px", fontSize: 13, fontWeight: 500, boxShadow: "0 4px 16px rgba(0,0,0,.1)" }}>{toast.msg}</div>}
     </div>
   );
