@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, getDoc } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBoQqt2a_bgTbgC-bvV7yXpbSEO5ziQBRI",
@@ -14,6 +15,7 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
+const storage = getStorage(firebaseApp); // INICIALIZAÇÃO DO STORAGE
 const FB_API_KEY = firebaseConfig.apiKey;
 
 async function criarUsuarioFirebase(email, senha) {
@@ -27,6 +29,7 @@ async function criarUsuarioFirebase(email, senha) {
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────
+const CATEGORIAS = ["Fixação","Lubrificação","Tubulação","Elétrico","Refrigeração","Gás","Outro"];
 const STATUS_CONTRATO = {
   ativo:     { label:"Ativo",     color:"#16a34a", bg:"#dcfce7", border:"#86efac" },
   encerrado: { label:"Encerrado", color:"#dc2626", bg:"#fee2e2", border:"#fca5a5" },
@@ -45,7 +48,6 @@ const PAPEIS = {
 const OPCOES_UNIDADE = ["UNID", "KG", "M", "L", "M²", "M³", "CX", "PC", "KIT"];
 
 // ── Cálculos ──────────────────────────────────────────────────────────────
-// Arredondamento comercial Excel (ARREDONDAR): meio sobe
 function arred(n, dec = 2) {
   const num = parseFloat(n) || 0; 
   const f = Math.pow(10, dec);
@@ -88,7 +90,7 @@ function enriquecer(c) {
 function calcStatusCot(dt) {
   if (!dt) return "vencida";
   const v = new Date(dt + "T12:00:00"); v.setFullYear(v.getFullYear() + 1);
-  const d = Math.ceil((v - new Date())/ 864e5);
+  const d = Math.ceil((v - new Date()) / 864e5);
   return d < 0 ? "vencida" : d <= 30 ? "avencer" : "vigente";
 }
 const fmtVenc = dt => { if (!dt) return "—"; const v = new Date(dt + "T12:00:00"); v.setFullYear(v.getFullYear() + 1); return v.toLocaleDateString("pt-BR"); };
@@ -100,16 +102,17 @@ const fmtData = dt => dt ? new Date(dt + "T12:00:00").toLocaleDateString("pt-BR"
 const emptyFormCotacao = { 
   material: "", codigo: "", unidade: "UNID", contratoId: "", dataElaboracao: "", 
   quantidade: 1, observacoes: "", imagem: null, 
-  precoDireto: false, valorFinalDireto: "", docDiretoNome: "", docDiretoData: null,
-  fornecedores: [{ fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome: "", documentoData: null, documentoRef: null }] 
+  precoDireto: false, valorFinalDireto: "", docDiretoNome: "", docDiretoUrl: null, docDiretoFile: null,
+  fornecedores: [{ fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome: "", documentoUrl: null, documentoRef: null, documentoFile: null }] 
 };
 
 const emptyFormContrato = {
   numero: "", processoSEI: "", objeto: "", statusContrato: "ativo",
   contratanteNome: "", contratanteCNPJ: "", contratanteRepresentante: "", contratanteCargo: "",
   contratadaRazaoSocial: "", contratadaCNPJ: "", contratadaEndereco: "", contratadaTelefone: "", contratadaEmail: "", contratadaRepresentante: "",
-  dataInicio: "", dataTermino: "", prorrogavel: "sim", limiteProrrogacao: "",
-  valorMensal: "", valorTotal: "", bdi: "", desconto: "", fiscal: "", observacoes: ""
+  dataInicio: "", dataTermino: "", prazoMeses: "", prorrogavel: "sim", limiteProrrogacao: "",
+  valorMensal: "", valorTotal: "", regimeExecucao: "", indiceReajuste: "IPCA",
+  bdi: "", desconto: "", fiscal: "", observacoes: ""
 };
 
 // ── Badges ────────────────────────────────────────────────────────────────
@@ -164,10 +167,9 @@ function PainelPrecos({ fornecedores }) {
 }
 
 // ── Modal de cotação ──────────────────────────────────────────────────────
-function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, onClose }) {
+function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, onClose, isSaving }) {
   const [form, setForm] = useState(initialForm);
   
-  // Estados para validações visuais obrigatórias
   const [erroContrato, setErroContrato] = useState(false);
   const [erroMaterial, setErroMaterial] = useState(false);
   const [erroDataElaboracao, setErroDataElaboracao] = useState(false);
@@ -179,20 +181,23 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
   }, [form.fornecedores, form.bdi, form.desconto]);
 
   function updForn(i, k, v) { setForm(f => ({ ...f, fornecedores: f.fornecedores.map((fo, idx) => idx === i ? { ...fo, [k]: v } : fo) })); }
-  function handleImg(ev) { const file = ev.target.files[0]; if (!file) return; const r = new FileReader(); r.onload = x => setForm(f => ({ ...f, imagem: x.target.result })); r.readAsDataURL(file); }
+  
+  function handleImg(ev) { 
+      const file = ev.target.files[0]; 
+      if (!file) return; 
+      const r = new FileReader(); 
+      r.onload = x => setForm(f => ({ ...f, imagem: x.target.result, imagemFile: file })); 
+      r.readAsDataURL(file); 
+  }
   
   function handleDocForn(i, ev) {
     const file = ev.target.files[0]; 
     if (!file) return; 
-    const r = new FileReader(); 
-    r.onload = x => {
-      setForm(f => {
-        const newForn = [...f.fornecedores];
-        newForn[i] = { ...newForn[i], documentoData: x.target.result, documentoNome: file.name, documentoRef: null };
-        return { ...f, fornecedores: newForn };
-      });
-    }; 
-    r.readAsDataURL(file); 
+    setForm(f => {
+      const newForn = [...f.fornecedores];
+      newForn[i] = { ...newForn[i], documentoFile: file, documentoNome: file.name, documentoRef: null, documentoUrl: null };
+      return { ...f, fornecedores: newForn };
+    });
   }
 
   const lbl = (txt, erro, req) => <label style={{ fontSize: 12, fontWeight: 600, color: erro ? "#dc2626" : "#64748b", display: "block", marginBottom: 4 }}>{txt}{req && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}</label>;
@@ -221,7 +226,7 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
     if (!form.material.trim()) { setErroMaterial(true); flagErro = true; } else { setErroMaterial(false); }
     if (!form.dataElaboracao) { setErroDataElaboracao(true); flagErro = true; } else { setErroDataElaboracao(false); }
     
-    if (flagErro) return; // Impede o salvamento silencioso e exibe o erro visual estruturado
+    if (flagErro) return; 
 
     if (form.precoDireto) {
       onSave({ ...form });
@@ -231,8 +236,10 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 760, maxHeight: "94vh", overflowY: "auto", padding: 26 }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={!isSaving ? onClose : undefined}>
+      <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 760, maxHeight: "94vh", overflowY: "auto", padding: 26, position: "relative" }}>
+        {isSaving && <div style={{position:"absolute", inset:0, background:"rgba(255,255,255,0.7)", zIndex:10, display:"flex", alignItems:"center", justifyContent:"center", fontWeight:"bold", color:"#0369a1"}}>Enviando arquivos e salvando...</div>}
+        
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>{editId ? "Editar cotação" : "Nova cotação"}</div>
 
         <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a", letterSpacing: .5, marginBottom: 16, paddingBottom: 8, borderBottom: "2px solid #f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
@@ -259,7 +266,7 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
           <div>{lbl("Código (Automático)", false, false)}<input value={form.codigo || ""} readOnly placeholder="Selecione um contrato..." style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#f1f5f9", color: "#64748b" }} /></div>
           
           <div>{lbl("Unidade", false, false)}
-            <select value={form.unidade || "UNID"} onChange={ev => setForm(p => ({ ...p, Fruits: ev.target.value, unidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#fff" }}>
+            <select value={form.unidade || "UNID"} onChange={ev => setForm(p => ({ ...p, unidade: ev.target.value }))} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, background: "#fff" }}>
               {OPCOES_UNIDADE.map(u => <option key={u}>{u}</option>)}
             </select>
           </div>
@@ -298,11 +305,9 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
                     <input type="file" accept=".pdf,image/*" onChange={ev => {
                         const file = ev.target.files[0];
                         if(!file) return;
-                        const r = new FileReader();
-                        r.onload = x => setForm(f => ({ ...f, docDiretoData: x.target.result, docDiretoNome: file.name }));
-                        r.readAsDataURL(file);
+                        setForm(f => ({ ...f, docDiretoFile: file, docDiretoNome: file.name, docDiretoUrl: null }));
                     }} style={{fontSize: 12, marginTop:4}} />
-                    {form.docDiretoNome && <div style={{fontSize:12, color:"#16a34a", marginTop:6, fontWeight:600}}>✓ Arquivo anexado: {form.docDiretoNome}</div>}
+                    {form.docDiretoNome && <div style={{fontSize:12, color:"#16a34a", marginTop:6, fontWeight:600}}>✓ Arquivo selecionado: {form.docDiretoNome}</div>}
                 </div>
             </div>
           </div>
@@ -343,12 +348,12 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
                           onChange={ev => {
                             const val = ev.target.value;
                             if (val === "novo") { updForn(i, "documentoRef", null); }
-                            else { updForn(i, "documentoRef", parseInt(val)); updForn(i, "documentoData", null); updForn(i, "documentoNome", ""); }
+                            else { updForn(i, "documentoRef", parseInt(val)); updForn(i, "documentoFile", null); updForn(i, "documentoUrl", null); updForn(i, "documentoNome", ""); }
                           }}
                           style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: "8px 10px", fontSize: 12, width: "100%", background:"#fff" }}>
                           <option value="novo">Anexar novo arquivo para esta fonte...</option>
                           {form.fornecedores.map((out, idx) => {
-                            if (idx !== i && out.documentoRef === null && out.documentoData) {
+                            if (idx !== i && out.documentoRef === null && (out.documentoFile || out.documentoUrl)) {
                               return <option key={idx} value={idx}>Usar arquivo já anexado na Fonte {idx + 1} ({out.documentoNome})</option>;
                             }
                             return null;
@@ -357,7 +362,7 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
                         {f.documentoRef === null ? (
                           <div style={{ marginTop: 4 }}>
                             <input type="file" accept=".pdf,image/*" onChange={e => handleDocForn(i, e)} style={{ fontSize: 11 }} />
-                            {f.documentoNome && <div style={{ fontSize: 12, color: "#16a34a", marginTop: 6, fontWeight: 600 }}>✓ Anexado: {f.documentoNome}</div>}
+                            {f.documentoNome && <div style={{ fontSize: 12, color: "#16a34a", marginTop: 6, fontWeight: 600 }}>✓ Arquivo: {f.documentoNome}</div>}
                           </div>
                         ) : (
                           <div style={{ fontSize: 12, color: "#0369a1", marginTop: 4, fontWeight: 600 }}>✓ Vinculado ao documento da Fonte {f.documentoRef + 1}</div>
@@ -367,7 +372,7 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
                   </div>
                 </div>
               ))}
-              <button onClick={() => setForm(f => ({ ...f, fornecedores: [...(f.fornecedores || []), { fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome:"", documentoData:null, documentoRef:null }] }))} style={{ marginTop: 4, fontSize: 12, border: "1px dashed #cbd5e1", borderRadius: 8, padding: "10px 14px", background: "#fff", color: "#64748b", width: "100%", cursor: "pointer", fontWeight:600 }}>+ Adicionar outra fonte</button>
+              <button onClick={() => setForm(f => ({ ...f, fornecedores: [...(f.fornecedores || []), { fonte: "Cotação de Mercado", nome: "", cpfCnpj: "", contato: "", url: "", valor: "", documentoNome:"", documentoFile:null, documentoUrl:null, documentoRef:null }] }))} style={{ marginTop: 4, fontSize: 12, border: "1px dashed #cbd5e1", borderRadius: 8, padding: "10px 14px", background: "#fff", color: "#64748b", width: "100%", cursor: "pointer", fontWeight:600 }}>+ Adicionar outra fonte</button>
             </div>
             
             <PainelPrecos fornecedores={form.fornecedores || []} />
@@ -394,11 +399,11 @@ function FormModalCotacao({ editId, initialForm, contratos, cotacoes, onSave, on
 
         <div style={{ display: "grid", gap: 12, marginBottom: 20 }}>
           <div>{lbl("Observações", false, false)}<textarea value={form.observacoes || ""} onChange={ev => setForm(p => ({ ...p, observacoes: ev.target.value }))} rows={2} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} /></div>
-          <div>{lbl("Imagem do material", false, false)}<input type="file" accept="image/*" onChange={handleImg} style={{ fontSize: 13 }} />{form.imagem && <img src={form.imagem} style={{ marginTop: 8, height: 72, borderRadius: 8, objectFit: "cover" }} />}</div>
+          <div>{lbl("Imagem do material", false, false)}<input type="file" accept="image/*" onChange={handleImg} style={{ fontSize: 13 }} />{form.imagem && !form.imagemFile && <img src={form.imagem} style={{ marginTop: 8, height: 72, borderRadius: 8, objectFit: "cover" }} />}{form.imagemFile && <div style={{ fontSize: 12, color: "#16a34a", marginTop: 6, fontWeight: 600 }}>✓ Imagem selecionada: {form.imagemFile.name}</div>}</div>
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
-          <button onClick={onClose} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer", fontWeight:600 }}>Cancelar</button>
-          <button onClick={handleSave} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 22px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{editId ? "Salvar alterações" : "Cadastrar cotação"}</button>
+          <button onClick={onClose} disabled={isSaving} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer", fontWeight:600 }}>Cancelar</button>
+          <button onClick={handleSave} disabled={isSaving} style={{ background: "#0f172a", color: "#fff", border: "none", borderRadius: 8, padding: "9px 22px", fontSize: 13, fontWeight: 600, cursor: isSaving ? "not-allowed" : "pointer" }}>{isSaving ? "Enviando Arquivos..." : editId ? "Salvar alterações" : "Cadastrar cotação"}</button>
         </div>
       </div>
     </div>
@@ -469,7 +474,7 @@ function FormModalContrato({ editId, initialForm, onSave, onClose }) {
 
           {sec("GESTÃO")}
           {inp("Fiscal do contrato", "fiscal")}
-          <div style={{ gridColumn: "1/-1" }}>{lbl("Observações")}<textarea value={form.objeto || ""} value={form.observacoes || ""} onChange={ev => setForm(p => ({ ...p, observacoes: ev.target.value }))} rows={2} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} /></div>
+          <div style={{ gridColumn: "1/-1" }}>{lbl("Observações")}<textarea value={form.observacoes || ""} onChange={ev => setForm(p => ({ ...p, observacoes: ev.target.value }))} rows={2} style={{ width: "100%", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "vertical" }} /></div>
         </div>
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 24, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
@@ -504,7 +509,7 @@ function PainelContratos({ showToast }) {
         const atualizado = { ...editando, ...form };
         await setDoc(doc(db, "contratos", editando.id), atualizado);
         setContratos(p => p.map(c => c.id === editando.id ? atualizado : c));
-        showToast("Contrato updated.");
+        showToast("Contrato atualizado.");
       } else {
         const id = "contrato-" + Date.now();
         const novo = { ...form, id, criadoEm: new Date().toISOString(), materiais: [] };
@@ -698,7 +703,7 @@ function PainelItensPrevistos({ contratosAcessiveis, setContratos, showToast, us
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Reajuste em lote:</span>
                 <input type="number" placeholder="Ex: 5.5 (%)" value={reajustePct} onChange={e => setReajustePct(e.target.value)} style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: "6px 10px", fontSize: 12, width: 110 }} />
-                <button onClick={applyReajuste} onClick={aplicarReajuste} style={{ background: "#0369a1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Aplicar</button>
+                <button onClick={aplicarReajuste} style={{ background: "#0369a1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Aplicar</button>
               </div>
             )}
           </div>
@@ -799,9 +804,9 @@ function PainelUsuarios({ showToast }) {
     setSalvando(true);
     try {
       if (editando) {
-        const updatedUser = { ...editando, nome: form.nome, papel: form.papel, contratosAcesso: form.contratosAcesso || [] };
-        await setDoc(doc(db, "usuarios", editando.uid), updatedUser);
-        setUsuarios(p => p.map(u => u.uid === editando.uid ? updatedUser : u));
+        const atualizado = { ...editando, nome: form.nome, papel: form.papel, contratosAcesso: form.contratosAcesso || [] };
+        await setDoc(doc(db, "usuarios", editando.uid), atualizado);
+        setUsuarios(p => p.map(u => u.uid === editando.uid ? atualizado : u));
         showToast("Usuário atualizado.");
       } else {
         const uid = await criarUsuarioFirebase(form.email, form.senha);
@@ -981,6 +986,7 @@ export default function App() {
   const [editId, setEditId] = useState(null);
   const [detalhe, setDetalhe] = useState(null);
   const [toast, setToast] = useState(null);
+  const [salvandoCotacao, setSalvandoCotacao] = useState(false); // NOVO ESTADO PARA BLOQUEAR BOTOES DURANTE UPLOAD
 
   const showToast = (msg, tipo = "ok") => { setToast({ msg, tipo }); setTimeout(() => setToast(null), 3200); };
   const podeEditar = usuario?.papel === "admin" || usuario?.papel === "fiscal";
@@ -1045,7 +1051,6 @@ export default function App() {
     return true;
   }), [cotacoes, filtroStatus, filtroContrato, busca, usuario]);
 
-  // Agrupamento por contrato
   const cotacoesAgrupadas = useMemo(() => {
     const grupos = {};
     filtradas.forEach(c => {
@@ -1068,14 +1073,59 @@ export default function App() {
   function abrirEditar(c) { setFormInicial({ ...c, fornecedores: (c.fornecedores || []).map(f => ({ ...f })) }); setEditId(c.id); setModalForm(true); setDetalhe(null); }
 
   async function salvar(form) {
-    if (!form.material || !form.dataElaboracao) { showToast("Preencha material e data.", "erro"); return; }
-    if (!form.contratoId) { showToast("Vincule a cotação a um contrato.", "erro"); return; }
+    setSalvandoCotacao(true);
     const nova = enriquecer(form);
+    
     try {
-      if (editId) { const a = { ...nova, id: editId }; await setDoc(doc(db, "cotacoes", String(editId)), a); setCotacoes(p => p.map(c => c.id === editId ? a : c)); showToast("Cotação atualizada."); }
-      else { const nid = Math.max(0, ...cotacoes.map(c => c.id || 0)) + 1; const n2 = { ...nova, id: nid }; await setDoc(doc(db, "cotacoes", String(nid)), n2); setCotacoes(p => [...p, n2]); showToast("Cotação cadastrada."); }
-    } catch (e) { showToast("Erro ao salvar cotação.", "erro"); return; }
-    setModalForm(false);
+      // --- LÓGICA DE UPLOAD NO FIREBASE STORAGE ---
+      if (nova.imagemFile) {
+        const imgRef = ref(storage, `cotacoes/${Date.now()}_img_${nova.imagemFile.name}`);
+        await uploadBytes(imgRef, nova.imagemFile);
+        nova.imagem = await getDownloadURL(imgRef);
+        delete nova.imagemFile;
+      }
+
+      if (nova.precoDireto) {
+        if (nova.docDiretoFile) {
+          const docRef = ref(storage, `cotacoes/${Date.now()}_doc_${nova.docDiretoFile.name}`);
+          await uploadBytes(docRef, nova.docDiretoFile);
+          nova.docDiretoUrl = await getDownloadURL(docRef);
+          delete nova.docDiretoFile;
+        }
+      } else {
+        if (nova.fornecedores) {
+          for (let i = 0; i < nova.fornecedores.length; i++) {
+            let f = nova.fornecedores[i];
+            if (f.documentoFile) {
+              const docRef = ref(storage, `cotacoes/${Date.now()}_forn${i}_${f.documentoFile.name}`);
+              await uploadBytes(docRef, f.documentoFile);
+              f.documentoUrl = await getDownloadURL(docRef);
+              delete f.documentoFile;
+            }
+          }
+        }
+      }
+      // --- FIM DA LÓGICA DE UPLOAD ---
+
+      if (editId) { 
+        const a = { ...nova, id: editId }; 
+        await setDoc(doc(db, "cotacoes", String(editId)), a); 
+        setCotacoes(p => p.map(c => c.id === editId ? a : c)); 
+        showToast("Cotação atualizada."); 
+      } else { 
+        const nid = Math.max(0, ...cotacoes.map(c => c.id || 0)) + 1; 
+        const n2 = { ...nova, id: nid }; 
+        await setDoc(doc(db, "cotacoes", String(nid)), n2); 
+        setCotacoes(p => [...p, n2]); 
+        showToast("Cotação cadastrada."); 
+      }
+      setModalForm(false);
+    } catch (e) { 
+      console.error("ERRO REAL DO FIREBASE:", e); 
+      showToast("Erro ao salvar cotação.", "erro"); 
+    } finally {
+      setSalvandoCotacao(false);
+    }
   }
 
   async function excluirCot(id) {
@@ -1247,7 +1297,7 @@ export default function App() {
         const c = cotacoes.find(x => x.id === detalhe.id) || detalhe;
         const ctr = contratos.find(x => x.id === c.contratoId);
         return (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={()=> setDetalhe(null)}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setDetalhe(null)}>
             <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 620, maxHeight: "91vh", overflowY: "auto", padding: 26 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
                 <div>
@@ -1283,12 +1333,22 @@ export default function App() {
                 )}
               </div>
 
+              {c.precoDireto && c.docDiretoUrl && (
+                  <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 14 }}>
+                      <span style={{ fontWeight: 600, color: "#64748b" }}>Anexo Comprobatório: </span>
+                      <a href={c.docDiretoUrl} target="_blank" rel="noreferrer" style={{color: "#0369a1", fontWeight: 600, textDecoration: "underline"}}>Ver Documento</a>
+                  </div>
+              )}
+
               {!c.precoDireto && (c.fornecedores || []).filter(f => parseFloat(f.valor) > 0).length > 0 && (
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 8, letterSpacing: .4 }}>PESQUISA DE PREÇOS</div>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                    <thead><tr style={{ background: "#f8fafc" }}>{["Fonte", "Valor (R$)", "Variação s/ média"].map(h => <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #e2e8f0" }}>{h}</th>)}</tr></thead>
-                    <tbody>{(c.fornecedores || []).filter(f => parseFloat(f.valor) > 0).map((f, i) =>
+                    <thead><tr style={{ background: "#f8fafc" }}>{["Fonte", "Valor (R$)", "Variação", "Anexo"].map(h => <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #e2e8f0" }}>{h}</th>)}</tr></thead>
+                    <tbody>{(c.fornecedores || []).filter(f => parseFloat(f.valor) > 0).map((f, i) => {
+                      // Resolve a URL do documento (seja dele próprio ou referenciado de outra fonte)
+                      const docUrl = f.documentoUrl || (f.documentoRef !== null && c.fornecedores[f.documentoRef]?.documentoUrl);
+                      return (
                       <tr key={i} style={{ background: parseFloat(f.valor) === c.menorValor ? "#f0fdf4" : "#fff", borderBottom: "1px solid #f1f5f9" }}>
                         <td style={{ padding: "7px 10px", fontWeight: 500 }}>
                           <span style={{color:"#0369a1", fontWeight:600}}>{f.fonte}</span> {f.nome ? `— ${f.nome}` : ""}
@@ -1296,8 +1356,12 @@ export default function App() {
                         </td>
                         <td style={{ padding: "7px 10px", fontFamily: "monospace" }}>R$ {brl(f.valor)}</td>
                         <td style={{ padding: "7px 10px", color: Math.abs(f.variacao || 0) > 0.15 ? "#b45309" : "#475569", fontWeight: 600 }}>{f.variacao != null ? pct(f.variacao) : "—"}</td>
+                        <td style={{ padding: "7px 10px" }}>
+                            {docUrl ? <a href={docUrl} target="_blank" rel="noreferrer" style={{color:"#0ea5e9", fontWeight:600, textDecoration:"underline"}}>Abrir</a> : "—"}
+                        </td>
                       </tr>
-                    )}</tbody>
+                      );
+                    })}</tbody>
                   </table>
                 </div>
               )}
@@ -1312,7 +1376,7 @@ export default function App() {
         );
       })()}
 
-      {modalForm && <FormModalCotacao editId={editId} initialForm={formInicial} contratos={contratosAcessiveis} cotacoes={cotacoes} onSave={salvar} onClose={() => setModalForm(false)} />}
+      {modalForm && <FormModalCotacao isSaving={salvandoCotacao} editId={editId} initialForm={formInicial} contratos={contratosAcessiveis} cotacoes={cotacoes} onSave={salvar} onClose={() => setModalForm(false)} />}
       {toast && <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 300, background: toast.tipo === "erro" ? "#fef2f2" : "#f0fdf4", border: `1px solid ${toast.tipo === "erro" ? "#fca5a5" : "#86efac"}`, color: toast.tipo === "erro" ? "#dc2626" : "#16a34a", borderRadius: 10, padding: "12px 18px", fontSize: 13, fontWeight: 500, boxShadow: "0 4px 16px rgba(0,0,0,.1)" }}>{toast.msg}</div>}
     </div>
   );
